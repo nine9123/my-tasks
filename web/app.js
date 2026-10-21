@@ -233,7 +233,7 @@ function projectHeader(ctx, tab) {
   return [
     h('h1', ctx.project.name, ' ', h('span.muted.small', k)),
     h('div.tabs', t('backlog', 'Backlog'), t('board', 'Board'), t('releases', 'Releases'), t('settings', 'Settings'),
-      h('span.spacer'), h('button.primary', { onclick: () => createIssueDialog(ctx, { board: tab === 'board' }) }, 'Create issue')),
+      h('span.spacer'), h('button.primary', { onclick: () => createIssueDialog(ctx, { board: tab === 'board' }) }, 'Create', h('span.wide', ' issue'))),
   ];
 }
 
@@ -1193,7 +1193,7 @@ async function issueView(key, host) {
           })), prioIcon(issue.priority), issue.priority),
           h('label', 'Release'), fieldPicker('Change release', () => relOpts.map(([id, name]) => ({
             icon: icon('release'), label: name, on: id === issue.release, onclick: () => { if (id !== issue.release) save({ release: id }); },
-          })), icon('release'), release ? release.name : h('span.muted', 'None')),
+          })), icon('release'), release ? h('span.ell', release.name) : h('span.muted', 'None')),
           issue.type !== 'Epic' ? [h('label', 'Board'), fieldPicker('Send to the board or the backlog', () => [
             { icon: icon('board'), label: 'On the board', on: issue.board, onclick: () => { if (!issue.board) save({ board: true }); } },
             { icon: icon('backlog'), label: 'In the backlog', on: !issue.board, onclick: () => { if (issue.board) save({ board: false }); } },
