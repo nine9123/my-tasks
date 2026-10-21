@@ -1,0 +1,47 @@
+# my-tasks behind idlegate (https://github.com/nine9123/idlegate): the
+# container is stopped after 30 minutes without requests and started by the
+# next one, so it uses no memory while nobody has the tracker open.
+#
+#   docker compose -f docker-compose.idlegate.yml up -d --build
+#
+# Compared with docker-compose.yml:
+#
+#   1. tasks no longer publishes 8099; idlegate does, and forwards to it over
+#      the compose network.
+#   2. container_name stays fixed (my-tasks): idlegate starts and stops it by
+#      that name.
+#   3. restart: unless-stopped, not always, so a sleeping tracker stays asleep
+#      across reboots until someone opens it.
+#
+# If you already run one idlegate per host, don't start a second one: add the
+# ROUTES line below to it and put it on this project's network instead.
+services:
+  tasks:
+    build: .
+    container_name: my-tasks
+    restart: unless-stopped
+    # Any uid/gid that can write the data dir.
+    user: "1000:1000"
+    # no ports: reached only through idlegate
+    environment:
+      # Put API_KEY in a .env file next to this one (see .env.example).
+      API_KEY: ${API_KEY:?set API_KEY in .env}
+    volumes:
+      - ./data:/data   # tasks.json, everything you have: back this up
+
+  idlegate:
+    image: gitea.internal:30008/nine9/idlegate:latest   # or build: https://github.com/nine9123/idlegate.git
+    container_name: idlegate
+    restart: unless-stopped      # the gate itself must always be up
+    # idlegate inspects the container at startup and exits if it doesn't exist.
+    depends_on: [tasks]
+    ports:
+      - "8099:8099"
+    environment:
+      # LISTEN  UPSTREAM  CONTAINERS  [options]
+      ROUTES: |
+        :8099 http://my-tasks:8099 my-tasks idle=30m health=/healthz
+    volumes:
+      # Inspect/start/stop only, but the socket grants full control of Docker;
+      # see idlegate's README for putting docker-socket-proxy in between.
+      - /var/run/docker.sock:/var/run/docker.sock

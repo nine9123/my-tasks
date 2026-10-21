@@ -1,0 +1,14 @@
+services:
+  tasks:
+    build: .
+    container_name: my-tasks
+    restart: unless-stopped
+    # Any uid/gid that can write the data dir.
+    user: "1000:1000"
+    ports:
+      - "8099:8099"
+    environment:
+      # Put API_KEY in a .env file next to this one (see .env.example).
+      API_KEY: ${API_KEY:?set API_KEY in .env}
+    volumes:
+      - ./data:/data   # tasks.json, everything you have: back this up
