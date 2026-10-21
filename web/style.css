@@ -148,7 +148,9 @@ input.inline { flex: 1; min-width: 0; width: 100%; padding: 1px 6px; }
 dialog { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); width: min(640px, 95vw); padding: 18px; }
 dialog::backdrop { background: rgba(9, 30, 66, .45); }
 dialog .fields { grid-template-columns: 100px 1fr; }
-dialog.issue-modal { width: min(1100px, 95vw); max-height: 92vh; overflow: auto; padding: 0; }
+/* Pinned to the top, so it only grows downwards when the issue replaces the
+   skeleton. */
+dialog.issue-modal { width: min(1100px, 95vw); max-height: 92vh; overflow: auto; padding: 0; margin: 4vh auto auto; }
 /* The padding is on the inner box: a click on the dialog itself is outside. */
 .issue-modal .modal-inner { padding: 0 20px 20px; }
 .issue-modal .modal-bar { display: flex; align-items: center; gap: 8px; position: sticky; top: 0; z-index: 2; background: var(--panel); padding: 10px 0 8px; margin-bottom: 4px; }
@@ -160,3 +162,33 @@ dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top
 .login input { width: 100%; margin: 10px 0; }
 .warnings { max-height: 300px; overflow: auto; font-size: 12px; }
 .statuses .srow { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+
+/* issue side panel: values with icons, menus to change them */
+.ico { flex: none; color: var(--muted); }
+.fval { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.fval .ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.field { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: 100%; min-width: 0; text-align: left; background: none; border-color: transparent; padding: 3px 6px; margin-left: -6px; }
+button.field:hover { background: var(--hover); border-color: var(--line); }
+button.field .caret { color: var(--muted); font-size: 10px; }
+.sdot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; flex: none; background: var(--todo-text); }
+.sdot.inprogress { background: var(--prog-text); }
+.sdot.done { background: var(--done-text); }
+.menu { max-height: 60vh; max-width: 420px; overflow-y: auto; }
+
+/* multiline summary edit on board cards */
+textarea.inline { flex: 1; min-width: 0; width: 100%; min-height: 0; padding: 1px 6px; resize: none; overflow: hidden; font: inherit; }
+
+/* issue picker (links) */
+.picker { position: relative; flex: 1; min-width: 220px; }
+.picker input { width: 100%; }
+.search-results.picker-results { left: 0; right: auto; width: 100%; min-width: 320px; max-height: 300px; }
+
+/* skeleton of the issue modal while it loads */
+.skel { height: 12px; margin: 0 0 10px; border-radius: 4px; background: var(--hover); animation: skel 1.2s ease-in-out infinite alternate; }
+.skel.crumb { margin: 0 0 10px; }
+.skel.title { height: 28px; margin: 4px 0 18px; }
+.skel.head { height: 16px; margin: 22px 0 12px; }
+.skel.box { height: 70px; }
+.modal-bar .skel, .fields .skel { margin: 0; }
+.fields .skel { height: 20px; }
+@keyframes skel { from { opacity: 1; } to { opacity: .45; } }

@@ -97,6 +97,31 @@ function statusPill(project, id) {
   const st = project.statuses.find((s) => s.id === id);
   return st ? h('span.pill.' + st.category, st.name) : h('span.pill', '?');
 }
+// Small line icons for the issue fields, drawn as SVG (h() makes HTML
+// elements only). Each is a list of [tag, attributes] on a 24x24 grid.
+const ICONS = {
+  key: [['path', { d: 'M10 3 8 21M16 3l-2 18M4 8h17M3 16h17' }]],
+  release: [['path', { d: 'M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z' }], ['circle', { cx: 7.5, cy: 7.5, r: 1.5 }]],
+  board: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M9 4v16M15 4v16' }]],
+  backlog: [['path', { d: 'M4 6h16M4 12h16M4 18h10' }]],
+  epic: [['path', { d: 'M13 2 4 14h7l-1 8 9-12h-7z' }]],
+  created: [['rect', { x: 3, y: 5, width: 18, height: 16, rx: 2 }], ['path', { d: 'M3 10h18M8 3v4M16 3v4' }]],
+  updated: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M12 7v5l3 2' }]],
+  resolved: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'm8 12 3 3 5-6' }]],
+};
+function icon(name) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  for (const [k, v] of Object.entries({ viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none', stroke: 'currentColor',
+    'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', class: 'ico', 'aria-hidden': 'true' })) svg.setAttribute(k, v);
+  for (const [tag, attrs] of ICONS[name]) {
+    const el = document.createElementNS(ns, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    svg.append(el);
+  }
+  return svg;
+}
+
 const isDone = (project, issue) => (project.statuses.find((s) => s.id === issue.status) || {}).category === 'done';
 
 // ---------- markdown (small, safe subset) ----------
@@ -226,7 +251,8 @@ function popMenu(anchor, items) {
       class: it.on ? 'on' : '',
       onclick: (e) => { e.stopPropagation(); closeMenu(); it.onclick(); },
     }, it.icon || null, it.label))));
-  document.body.append(m);
+  // In a modal dialog (the top layer), the menu has to be inside it to show.
+  (anchor.closest('dialog') || document.body).append(m);
   const r = anchor.getBoundingClientRect();
   m.style.left = Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8)) + 'px';
   m.style.top = (r.bottom + m.offsetHeight + 4 > innerHeight ? Math.max(8, r.top - m.offsetHeight - 4) : r.bottom + 4) + 'px';
@@ -258,9 +284,15 @@ function issueEditor(issue, redraw) {
 }
 
 // editInline swaps el for a text input. Enter or leaving the field saves,
-// Escape puts el back unchanged.
-function editInline(el, value, save) {
-  const input = h('input.inline', { type: 'text', value, onclick: (e) => e.stopPropagation() });
+// Escape puts el back unchanged. multiline: a text area that grows with the
+// text and wraps it like el, for the summaries on board cards (a summary is
+// still one line: Enter saves).
+function editInline(el, value, save, multiline) {
+  const input = multiline
+    ? h('textarea.inline', { rows: 1, value, onclick: (e) => e.stopPropagation() })
+    : h('input.inline', { type: 'text', value, onclick: (e) => e.stopPropagation() });
+  const fit = () => { input.style.height = 'auto'; input.style.height = input.scrollHeight + 'px'; };
+  if (multiline) input.addEventListener('input', fit);
   // Text in a draggable element can't be selected with the mouse.
   const drag = el.closest('[draggable=true]');
   if (drag) drag.setAttribute('draggable', 'false');
@@ -272,7 +304,7 @@ function editInline(el, value, save) {
   const finish = async (ok) => {
     if (done) return;
     done = true;
-    const v = input.value.trim();
+    const v = input.value.replace(/\s*\n\s*/g, ' ').trim();
     if (!ok || !v || v === value) { restore(); return; }
     try { await save(v); } catch (err) { restore(); throw err; }
   };
@@ -283,6 +315,7 @@ function editInline(el, value, save) {
   });
   input.addEventListener('blur', () => finish(true));
   el.replaceWith(input);
+  if (multiline) fit();
   input.focus();
   input.select();
 }
@@ -316,6 +349,82 @@ function prioButton(issue, save) {
 
 function iconButton(label, title, onclick) {
   return h('button.icon.hover', { title, onclick: (e) => { e.stopPropagation(); onclick(e.currentTarget); } }, label);
+}
+
+// fieldPicker is a value in the issue's side panel: shown with its icon, a
+// click opens a menu of the choices (items() returns popMenu items).
+function fieldPicker(title, items, ...content) {
+  const b = h('button.field', {
+    type: 'button', title, onclick: (e) => { e.stopPropagation(); popMenu(b, items()); },
+  }, h('span.fval', content), h('span.caret', '▾'));
+  return b;
+}
+
+// issuePicker is a text field that searches issues as you type and lists
+// them to pick one; Enter or a click picks the highlighted one. A key typed
+// in full works without picking. exclude: a key not to offer.
+function issuePicker(exclude, placeholder) {
+  const input = h('input', { type: 'text', placeholder, autocomplete: 'off', 'aria-label': placeholder });
+  const list = h('div.search-results.picker-results', { hidden: true });
+  let hits = [];
+  let sel = 0;
+  let seq = 0;
+  let timer = null;
+  let picked = null;
+
+  const show = () => {
+    list.replaceChildren(...(hits.length ? hits.map((hit, k) => h('div.hit', {
+      class: k === sel ? 'on' : '',
+      onmousedown: (e) => e.preventDefault(), // keep the focus in the input
+      onclick: () => pick(hit),
+    }, typeIcon(hit.type), h('span.key', hit.key), h('span.sum', hit.summary),
+    h('span.pill' + (hit.done ? '.done' : ''), hit.status))) : [h('div.empty', 'No issues found.')]));
+    list.hidden = false;
+    const on = list.querySelector('.hit.on');
+    if (on) on.scrollIntoView({ block: 'nearest' });
+  };
+  const run = async () => {
+    clearTimeout(timer);
+    const q = input.value.trim();
+    const n = ++seq;
+    if (!q) { hits = []; list.hidden = true; return; }
+    const r = await api('GET', '/api/search?q=' + encodeURIComponent(q));
+    if (n !== seq) return; // a newer search is under way
+    hits = r.filter((hit) => hit.key !== exclude);
+    sel = 0;
+    show();
+  };
+  const pick = (hit) => {
+    picked = hit;
+    seq++; // drop a search still under way
+    input.value = `${hit.key} ${hit.summary}`;
+    list.hidden = true;
+  };
+
+  input.addEventListener('input', () => { picked = null; clearTimeout(timer); timer = setTimeout(run, 150); });
+  input.addEventListener('blur', () => { list.hidden = true; });
+  input.addEventListener('focus', () => { if (!picked && hits.length && input.value.trim()) show(); });
+  input.addEventListener('keydown', (e) => {
+    if (list.hidden) return; // Enter submits the form
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!hits.length) return;
+      sel = (sel + (e.key === 'ArrowDown' ? 1 : hits.length - 1)) % hits.length;
+      show();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (hits[sel]) pick(hits[sel]);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      list.hidden = true;
+    }
+  });
+  return {
+    el: h('div.picker', input, list),
+    // The picked issue's key, else what was typed (a key).
+    value: () => (picked ? picked.key : input.value.trim().toUpperCase()),
+  };
 }
 
 // issueRow is one line in the backlog, a release or an epic. opts:
@@ -708,6 +817,10 @@ async function pageBoard(key) {
   const st = pageBoard.state[key] || (pageBoard.state[key] = { release: 'open', epic: '', q: '' });
   const board = h('div.board');
   const DONE_LIMIT = 30;
+  // Like Jira's boards, the unreleased work shows done issues only for two
+  // weeks after they were resolved.
+  const DONE_DAYS = 14;
+  const doneSince = new Date(Date.now() - DONE_DAYS * 864e5).toISOString();
 
   // moveCard puts an issue into a column and, with rank, before or after
   // another card.
@@ -726,7 +839,7 @@ async function pageBoard(key) {
     const save = issueEditor(i, draw);
     const rel = ctx.relById.get(i.release);
     const sum = h('div.csum', i.summary);
-    const editSummary = () => editInline(sum, i.summary, (v) => save({ summary: v }));
+    const editSummary = () => editInline(sum, i.summary, (v) => save({ summary: v }), true);
     const k = items.indexOf(i);
     const c = h('div.card', { draggable: 'true', 'data-key': i.key, onclick: () => openIssue(i.key) },
       h('div.ctop', sum,
@@ -749,11 +862,17 @@ async function pageBoard(key) {
     const q = st.q.toLowerCase();
     const rel = (i) => ctx.relById.get(i.release);
     // Issues still in the backlog are not on the board.
+    const oldDone = new Map(); // status id → done issues hidden for their age
     const visible = ctx.issues.filter((i) => {
       if (i.type === 'Epic' || !i.board) return false;
-      if (st.epic && String(i.epic) !== st.epic) return false;
+      if (st.epic === 'none' ? i.epic : st.epic && String(i.epic) !== st.epic) return false;
       if (q && !(i.key + ' ' + i.summary).toLowerCase().includes(q)) return false;
-      if (st.release === 'open') return rel(i) ? !rel(i).released : !isDone(ctx.project, i);
+      if (st.release === 'open') {
+        if (rel(i) && rel(i).released) return false;
+        if (!isDone(ctx.project, i) || (i.resolved && new Date(i.resolved).toISOString() >= doneSince)) return true;
+        oldDone.set(i.status, (oldDone.get(i.status) || 0) + 1);
+        return false;
+      }
       if (st.release === 'all') return true;
       if (st.release === 'none') return !i.release;
       return String(i.release) === st.release;
@@ -771,7 +890,9 @@ async function pageBoard(key) {
       const col = h('div.col',
         h('div.head', `${s.name} `, h('span', String(items.length + more))),
         list,
-        more ? h('div.muted.small', `${more} older not shown`) : null);
+        more ? h('div.muted.small', `${more} older not shown`) : null,
+        oldDone.get(s.id)
+          ? h('div.muted.small', `${oldDone.get(s.id)} done more than ${DONE_DAYS} days ago not shown: pick a release or Everything to see them.`) : null);
       col.addEventListener('dragover', (e) => {
         if (!dragKey) return;
         e.preventDefault();
@@ -797,7 +918,7 @@ async function pageBoard(key) {
 
   const relOpts = [['open', 'Unreleased work'], ['all', 'Everything'], ['none', 'No release'],
     ...ctx.releases.map((r) => [String(r.id), r.name + (r.released ? ' (released)' : '')])];
-  const epicOpts = [['', 'All epics'], ...ctx.epics.map((e) => [String(e.id), e.summary])];
+  const epicOpts = [['', 'All epics'], ['none', 'No epic'], ...ctx.epics.map((e) => [String(e.id), e.summary])];
   $app.replaceChildren(...projectHeader(ctx, 'board'),
     h('div.toolbar',
       h('input', { type: 'text', placeholder: 'Filter…', value: st.q, oninput: (e) => { st.q = e.target.value; draw(); } }),
@@ -1004,7 +1125,8 @@ async function issueView(key, host) {
   };
   const newComment = h('textarea', { style: 'min-height:70px', placeholder: 'Add a comment…' });
 
-  const linkForm = { type: 'Blocks:0', issue: '' };
+  const linkForm = { type: 'Blocks:0' };
+  const linkPicker = issuePicker(issue.key, 'Search for an issue to link…');
   const linkOpts = [];
   for (const lt of META.linkTypes) {
     linkOpts.push([lt.name + ':0', lt.outward]);
@@ -1014,7 +1136,7 @@ async function issueView(key, host) {
   const children = issue.type === 'Epic' ? ctx.issues.filter((i) => i.epic === issue.id) : [];
   const epic = issue.epic && ctx.byId.get(issue.epic);
   const relOpts = [[0, '— none —'], ...ctx.releases.filter((r) => !r.released || r.id === issue.release).map((r) => [r.id, r.name])];
-  const epicOpts = [['', '— none —'], ...ctx.epics.map((e) => [e.key, `${e.key} ${e.summary}`])];
+  const release = ctx.relById.get(issue.release);
 
   return h('div',
     h('div.muted.small', { style: 'margin-bottom:6px' },
@@ -1042,12 +1164,14 @@ async function issueView(key, host) {
             onsubmit: async (e) => {
               e.preventDefault();
               const [type, inward] = linkForm.type.split(':');
-              await api('POST', `/api/issues/${key}/links`, { type, issue: linkForm.issue, inward: inward === '1' });
+              const other = linkPicker.value();
+              if (!other) return;
+              await api('POST', `/api/issues/${key}/links`, { type, issue: other, inward: inward === '1' });
               host.refresh();
             },
           },
           select(linkOpts, linkForm.type, (v) => { linkForm.type = v; }),
-          h('input', { type: 'text', placeholder: `${p.key}-123`, size: 10, oninput: (e) => { linkForm.issue = e.target.value; } }),
+          linkPicker.el,
           h('button', { type: 'submit' }, 'Link'))),
         h('h2', `Comments (${comments.length})`),
         comments.map(commentEl),
@@ -1056,16 +1180,32 @@ async function issueView(key, host) {
           h('button.primary', { onclick: async () => { if (!newComment.value.trim()) return; await api('POST', `/api/issues/${key}/comments`, { body: newComment.value }); host.refresh(); } }, 'Comment'))),
       h('div.panel',
         h('div.fields',
-          h('label', 'Key'), h('b', issue.key),
-          h('label', 'Status'), select(p.statuses.map((s) => [s.id, s.name]), issue.status, (v) => save({ status: +v })),
-          h('label', 'Type'), select(META.types.map((t) => [t, t]), issue.type, (v) => save({ type: v })),
-          h('label', 'Priority'), select(META.priorities.map((x) => [x, x]), issue.priority, (v) => save({ priority: v })),
-          h('label', 'Release'), select(relOpts, issue.release, (v) => save({ release: +v })),
-          issue.type !== 'Epic' ? [h('label', 'Board'), select([['1', 'On the board'], ['0', 'In the backlog']], issue.board ? '1' : '0', (v) => save({ board: v === '1' }))] : null,
-          issue.type !== 'Epic' ? [h('label', 'Epic'), select(epicOpts, epic ? epic.key : '', (v) => save({ epic: v }))] : null,
-          h('label.muted', 'Created'), h('span.small', fmtDateTime(issue.created)),
-          h('label.muted', 'Updated'), h('span.small', fmtDateTime(issue.updated)),
-          issue.resolved ? [h('label.muted', 'Resolved'), h('span.small', fmtDateTime(issue.resolved))] : null),
+          h('label', 'Key'), h('b.fval', icon('key'), issue.key),
+          h('label', 'Status'), fieldPicker('Change status', () => p.statuses.map((s) => ({
+            icon: h('span.sdot.' + s.category), label: s.name, on: s.id === issue.status,
+            onclick: () => { if (s.id !== issue.status) save({ status: s.id }); },
+          })), statusPill(p, issue.status)),
+          h('label', 'Type'), fieldPicker('Change type', () => META.types.map((t) => ({
+            icon: typeIcon(t), label: t, on: t === issue.type, onclick: () => { if (t !== issue.type) save({ type: t }); },
+          })), typeIcon(issue.type), issue.type),
+          h('label', 'Priority'), fieldPicker('Change priority', () => META.priorities.map((x) => ({
+            icon: prioIcon(x), label: x, on: x === issue.priority, onclick: () => { if (x !== issue.priority) save({ priority: x }); },
+          })), prioIcon(issue.priority), issue.priority),
+          h('label', 'Release'), fieldPicker('Change release', () => relOpts.map(([id, name]) => ({
+            icon: icon('release'), label: name, on: id === issue.release, onclick: () => { if (id !== issue.release) save({ release: id }); },
+          })), icon('release'), release ? release.name : h('span.muted', 'None')),
+          issue.type !== 'Epic' ? [h('label', 'Board'), fieldPicker('Send to the board or the backlog', () => [
+            { icon: icon('board'), label: 'On the board', on: issue.board, onclick: () => { if (!issue.board) save({ board: true }); } },
+            { icon: icon('backlog'), label: 'In the backlog', on: !issue.board, onclick: () => { if (issue.board) save({ board: false }); } },
+          ], icon(issue.board ? 'board' : 'backlog'), issue.board ? 'On the board' : 'In the backlog')] : null,
+          issue.type !== 'Epic' ? [h('label', 'Epic'), fieldPicker('Change epic', () => [
+            { icon: icon('epic'), label: '— none —', on: !epic, onclick: () => { if (epic) save({ epic: '' }); } },
+            ...ctx.epics.map((e) => ({
+              icon: typeIcon('Epic'), label: `${e.key} ${e.summary}`, on: epic === e, onclick: () => { if (epic !== e) save({ epic: e.key }); },
+            }))], epic ? [typeIcon('Epic'), h('span.ell', epic.summary)] : [icon('epic'), h('span.muted', 'None')])] : null,
+          h('label.muted', 'Created'), h('span.small.fval', icon('created'), fmtDateTime(issue.created)),
+          h('label.muted', 'Updated'), h('span.small.fval', icon('updated'), fmtDateTime(issue.updated)),
+          issue.resolved ? [h('label.muted', 'Resolved'), h('span.small.fval', icon('resolved'), fmtDateTime(issue.resolved))] : null),
         h('div', { style: 'margin-top:16px' },
           h('button.danger', {
             onclick: async () => {
@@ -1099,7 +1239,7 @@ function openIssue(key) {
   closeMenu();
   hideSearch();
   if (!modal.dlg) {
-    const dlg = h('dialog.issue-modal', h('div.modal-inner', h('p.muted', 'Loading…')));
+    const dlg = h('dialog.issue-modal');
     // Escape while typing only leaves the field, so an edit isn't lost.
     // (On keydown: Chrome may not let a cancel event be prevented.)
     dlg.addEventListener('keydown', (e) => {
@@ -1124,7 +1264,30 @@ function openIssue(key) {
     modal.dlg = dlg;
   }
   modal.key = key;
+  // The skeleton has the layout of the issue, so the modal doesn't jump
+  // when it arrives.
+  modal.dlg.replaceChildren(modalSkeleton());
+  modal.dlg.scrollTop = 0;
   renderModal(true);
+}
+
+function modalSkeleton() {
+  const bar = (w, cls) => h('div.skel' + (cls || ''), { style: `width:${w}` });
+  return h('div.modal-inner', { 'aria-busy': 'true', 'aria-label': 'Loading…' },
+    h('div.modal-bar', bar('90px'), h('span.spacer'), h('button.icon', { title: 'Close (Esc)', onclick: () => modal.dlg && modal.dlg.close() }, '✕')),
+    bar('160px', '.crumb'),
+    h('div.issue',
+      h('div',
+        bar('70%', '.title'),
+        bar('110px', '.head'),
+        bar('100%'), bar('96%'), bar('88%'), bar('60%'),
+        bar('70px', '.head'),
+        bar('50%'),
+        bar('110px', '.head'),
+        bar('100%', '.box')),
+      h('div.panel',
+        h('div.fields', ['Key', 'Status', 'Type', 'Priority', 'Release', 'Board', 'Epic', 'Created', 'Updated'].map((l, k) =>
+          [h('label' + (k > 6 ? '.muted' : ''), l), bar(['60px', '90px', '80px', '90px', '70px', '120px', '140px', '150px', '150px'][k])])))));
 }
 
 function closeIssueModal() {
@@ -1151,7 +1314,7 @@ async function renderModal(top) {
   const scroll = top ? 0 : dlg.scrollTop;
   dlg.replaceChildren(h('div.modal-inner',
     h('div.modal-bar',
-      h('a', { href: `#/i/${key}`, title: 'Open on its own page' }, 'Open as page ↗'),
+      h('a', { href: `#/i/${key}`, target: '_blank', rel: 'noopener', title: 'Open on its own page, in a new tab' }, 'Open as page ↗'),
       h('span.spacer'),
       h('button.icon', { title: 'Close (Esc)', onclick: () => dlg.close() }, '✕')),
     view));

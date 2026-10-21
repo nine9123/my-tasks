@@ -23,13 +23,17 @@ auth. No users, no permissions, no automations.
   the backlog, or by moving an issue out of a to-do status anywhere). Drag
   cards between and within columns to set status and order. Shows the
   unreleased work by default; pick a single release or everything instead.
+  As on Jira's boards, the unreleased work shows done issues only for 14
+  days after they were resolved. The epic filter has *No epic*, which is
+  what Jira's *No Epic* swimlane shows when grouped by epic.
 - **Quick edits** on backlog rows and board cards, as in Jira: click the
   type or priority icon to change it, the pencil to rename in place, and
   the `⋯` menu to send an issue to the board / backlog or move it to the
   top or bottom.
 - **Issues** opened from the backlog, board, releases or search open in a
-  modal over the page; *Open as page* gives the issue its own page
-  (`#/i/WAR-1`).
+  modal over the page; *Open as page* opens the issue's own page
+  (`#/i/WAR-1`) in a new tab. To link an issue, search for it by key or
+  summary and pick it from the list.
 - **Search** in the header over all projects, by key, summary and
   description. Press `/` to jump to it.
 - **Releases**: name, start and release date, description, released or not,
@@ -147,6 +151,9 @@ Details worth knowing:
   backlog, the others onto the board. Re-importing only moves an issue to
   the board when its status changed out of to-do. Data from before the
   board/backlog split is sorted the same way the first time it is loaded.
+  Jira's XML doesn't say which issues are on Jira's board, so to-do issues
+  you had on the board there, and in-progress ones you had left in the
+  backlog, need moving once by hand (*Send to board* / *Send to backlog*).
 - **Releases** are created from the fix version names. Jira's XML has no
   release dates or released flag, so all imported releases start out
   *unreleased* without dates: set those on the *Releases* page (2.1 and 2.2
