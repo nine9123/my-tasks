@@ -28,8 +28,9 @@ auth. No users, no permissions, no automations.
   what Jira's *No Epic* swimlane shows when grouped by epic.
 - **Quick edits** on backlog rows and board cards, as in Jira: click the
   type or priority icon to change it, the pencil to rename in place, and
-  the `⋯` menu to send an issue to the board / backlog or move it to the
-  top or bottom.
+  the `⋯` menu to send an issue to the board (*Remove from board* in the
+  backlog's *Board* section, *Send to backlog* on the board) or move it to
+  the top or bottom.
 - **Issues** opened from the backlog, board, releases or search open in a
   modal over the page; *Open as page* opens the issue's own page
   (`#/i/WAR-1`) in a new tab. To link an issue, search for it by key or
@@ -153,7 +154,7 @@ Details worth knowing:
   board/backlog split is sorted the same way the first time it is loaded.
   Jira's XML doesn't say which issues are on Jira's board, so to-do issues
   you had on the board there, and in-progress ones you had left in the
-  backlog, need moving once by hand (*Send to board* / *Send to backlog*).
+  backlog, need moving once by hand (*Send to board* / *Remove from board*).
 - **Releases** are created from the fix version names. Jira's XML has no
   release dates or released flag, so all imported releases start out
   *unreleased* without dates: set those on the *Releases* page (2.1 and 2.2

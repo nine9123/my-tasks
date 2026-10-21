@@ -691,7 +691,9 @@ async function pageBacklog(key) {
         hideRelease: !!rel,
         redraw: draw,
         menu: () => [
-          i.board ? { label: 'Send to backlog', onclick: () => issueEditor(i, draw)({ board: false }) }
+          // Everything on this page reads as "in the backlog", so the
+          // Board section's rows say what the action does to the board.
+          i.board ? { label: 'Remove from board', onclick: () => issueEditor(i, draw)({ board: false }) }
             : { label: 'Send to board', onclick: () => issueEditor(i, draw)({ board: true }) },
           k > 0 ? { label: 'Move to top', onclick: () => moveIssue(i.key, target, { before: g.items[0].key }) } : null,
           k < g.items.length - 1 ? { label: 'Move to bottom', onclick: () => moveIssue(i.key, target, { after: g.items[g.items.length - 1].key }) } : null,
@@ -739,6 +741,7 @@ async function pageBacklog(key) {
     const head = [
       h('b', g.board ? 'Board' : rel ? rel.name : 'Backlog'),
       h('span.muted.small', `${g.items.length} issues`),
+      g.board ? h('span.muted.small', 'already on the Board tab') : null,
       rel && rel.releaseDate ? h('span.muted.small', 'release ' + fmtDate(rel.releaseDate)) : null,
       rel && rel.released ? h('span.pill.done', 'released') : null,
     ];
