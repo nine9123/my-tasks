@@ -36,6 +36,10 @@ auth. No users, no permissions, no automations.
   summary and pick it from the list.
 - **Search** in the header over all projects, by key, summary and
   description. Press `/` to jump to it.
+- **Epics**: a tab of their own, like Jira's *Timeline* without the
+  dates: each open epic with its status and the progress of its issues,
+  folding out to those issues; epics in a done status are folded away
+  under *Done*. Create an epic, or an issue in one, from there.
 - **Releases**: name, start and release date, description, released or not,
   with progress per release. Ordered by release date, then by version number.
 - **Import from Jira**: see [below](#migrating-from-jira).
