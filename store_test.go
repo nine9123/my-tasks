@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -250,5 +251,96 @@ func TestLinks(t *testing.T) {
 	s.DeleteIssue("APP-2")
 	if l, _ := s.Links("APP-1"); len(l) != 0 {
 		t.Fatalf("links to deleted issue: %+v", l)
+	}
+}
+
+func TestBoardFlag(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateProject("APP", "x", "")
+	a := mustIssue(t, s, "APP", "a")
+	if a.Board {
+		t.Fatal("new issues start in the backlog")
+	}
+	b, _ := s.CreateIssue("APP", IssueInput{Summary: ptr("b"), Board: ptr(true)})
+	if !b.Board {
+		t.Fatal("created on the board")
+	}
+	a, _ = s.UpdateIssue("APP-1", IssueInput{Status: ptr(2)})
+	if !a.Board {
+		t.Fatal("starting work moves an issue to the board")
+	}
+	a, _ = s.UpdateIssue("APP-1", IssueInput{Board: ptr(false)})
+	if a.Board || a.StatusID != 2 {
+		t.Fatalf("send to backlog: %+v", a)
+	}
+	a, _ = s.UpdateIssue("APP-1", IssueInput{Summary: ptr("a2"), Status: ptr(2)})
+	if a.Board {
+		t.Fatal("an unchanged status doesn't move the issue")
+	}
+	a, _ = s.UpdateIssue("APP-1", IssueInput{Status: ptr(3), Board: ptr(false)})
+	if a.Board {
+		t.Fatal("an explicit board flag wins")
+	}
+}
+
+func TestMigrateBoardFlag(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.json")
+	old := `{"nextId":10,"projects":{"1":{"id":1,"key":"APP","name":"x","statuses":[
+		{"id":1,"name":"TODO","category":"todo"},{"id":2,"name":"Doing","category":"inprogress"},
+		{"id":3,"name":"Done","category":"done"}],"nextNumber":4,"nextStatusId":4}},
+		"issues":{"2":{"id":2,"projectId":1,"number":1,"key":"APP-1","status":1},
+		"3":{"id":3,"projectId":1,"number":2,"key":"APP-2","status":2},
+		"4":{"id":4,"projectId":1,"number":3,"key":"APP-3","status":3}}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"APP-1": false, "APP-2": true, "APP-3": true}
+	for k, w := range want {
+		if i, _ := s.Issue(k); i.Board != w {
+			t.Fatalf("%s board %v, want %v", k, i.Board, w)
+		}
+	}
+	// Migrated once: sending an issue to the backlog sticks over a reload.
+	s.UpdateIssue("APP-2", IssueInput{Board: ptr(false)})
+	s2, _ := OpenStore(path)
+	if i, _ := s2.Issue("APP-2"); i.Board {
+		t.Fatal("migration ran again on a migrated file")
+	}
+}
+
+func TestSearch(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateProject("APP", "x", "")
+	s.CreateProject("WEB", "y", "")
+	mustIssue(t, s, "APP", "login page")
+	s.CreateIssue("WEB", IssueInput{Summary: ptr("other"), Description: ptr("fix the login")})
+	mustIssue(t, s, "WEB", "unrelated")
+	for k := 0; k < 10; k++ {
+		mustIssue(t, s, "APP", "filler")
+	}
+
+	keys := func(hs []SearchHit) []string {
+		out := []string{}
+		for _, h := range hs {
+			out = append(out, h.Key)
+		}
+		return out
+	}
+	if got := keys(s.Search("LOGIN", 20)); len(got) != 2 || got[0] != "APP-1" || got[1] != "WEB-1" {
+		t.Fatalf("summary before description: %v", got)
+	}
+	if got := keys(s.Search("app-1", 3)); len(got) != 3 || got[0] != "APP-1" {
+		t.Fatalf("exact key first, limited: %v", got)
+	}
+	hs := s.Search("web-2", 20)
+	if len(hs) != 1 || hs[0].Project != "WEB" || hs[0].Status != "TODO" || hs[0].Done {
+		t.Fatalf("hit: %+v", hs)
+	}
+	if got := s.Search("  ", 20); len(got) != 0 {
+		t.Fatalf("empty query: %v", got)
 	}
 }

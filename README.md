@@ -13,12 +13,25 @@ auth. No users, no permissions, no automations.
   with `TODO → In Progress → Testing → Done`. Each status has a category
   (to do / in progress / done); moving an issue into a *done* status sets its
   resolved date.
-- **Backlog**: every open issue in one ranked list, split into a section per
-  unreleased release plus one for issues without a release. Drag to reorder
-  or to move an issue into another release; type into a section's input and
-  press Enter to create an issue in TODO, already tagged with that release.
-- **Board**: a column per status, drag cards between columns. Shows the
+- **Backlog**: the issues not on the board yet, in one ranked list, split
+  into a section per unreleased release plus one for issues without a
+  release, with a *Board* section on top listing what is on the board. Drag
+  to reorder, to move an issue into another release, or onto / off the
+  board; type into a section's input and press Enter to create an issue in
+  TODO, already tagged with that release.
+- **Board**: a column per status with the issues sent to the board (from
+  the backlog, or by moving an issue out of a to-do status anywhere). Drag
+  cards between and within columns to set status and order. Shows the
   unreleased work by default; pick a single release or everything instead.
+- **Quick edits** on backlog rows and board cards, as in Jira: click the
+  type or priority icon to change it, the pencil to rename in place, and
+  the `⋯` menu to send an issue to the board / backlog or move it to the
+  top or bottom.
+- **Issues** opened from the backlog, board, releases or search open in a
+  modal over the page; *Open as page* gives the issue its own page
+  (`#/i/WAR-1`).
+- **Search** in the header over all projects, by key, summary and
+  description. Press `/` to jump to it.
 - **Releases**: name, start and release date, description, released or not,
   with progress per release. Ordered by release date, then by version number.
 - **Import from Jira**: see [below](#migrating-from-jira).
@@ -130,6 +143,10 @@ Details worth knowing:
 - **Statuses** are matched by name ignoring case and spaces, so Jira's
   `To Do`, `TESTING` and `DONE` land in `TODO`, `Testing` and `Done`. A
   status that matches nothing is added to the project's workflow.
+- **Board or backlog**: imported issues in a to-do status go to the
+  backlog, the others onto the board. Re-importing only moves an issue to
+  the board when its status changed out of to-do. Data from before the
+  board/backlog split is sorted the same way the first time it is loaded.
 - **Releases** are created from the fix version names. Jira's XML has no
   release dates or released flag, so all imported releases start out
   *unreleased* without dates: set those on the *Releases* page (2.1 and 2.2

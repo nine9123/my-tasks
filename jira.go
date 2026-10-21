@@ -250,7 +250,11 @@ func (s *Store) ImportJira(files [][]jiraItem) (ImportResult, error) {
 			}
 			i.Priority = "Medium"
 		}
-		i.StatusID = s.importStatus(p, it, &res)
+		status := s.importStatus(p, it, &res)
+		if status != i.StatusID && !inTodo(p, status) {
+			i.Board = true // as when the status is changed here
+		}
+		i.StatusID = status
 
 		i.ReleaseID = 0
 		if len(it.FixVersions) > 0 {
