@@ -691,9 +691,9 @@ async function pageBacklog(key) {
         hideRelease: !!rel,
         redraw: draw,
         menu: () => [
-          // Everything on this page reads as "in the backlog", so the
-          // Board section's rows say what the action does to the board.
-          i.board ? { label: 'Remove from board', onclick: () => issueEditor(i, draw)({ board: false }) }
+          // Both read "Send to board" on this page; in the Board section the
+          // item takes the issue off the board again.
+          i.board ? { label: 'Send to board', onclick: () => issueEditor(i, draw)({ board: false }) }
             : { label: 'Send to board', onclick: () => issueEditor(i, draw)({ board: true }) },
           k > 0 ? { label: 'Move to top', onclick: () => moveIssue(i.key, target, { before: g.items[0].key }) } : null,
           k < g.items.length - 1 ? { label: 'Move to bottom', onclick: () => moveIssue(i.key, target, { after: g.items[g.items.length - 1].key }) } : null,
