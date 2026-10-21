@@ -232,7 +232,7 @@ function projectHeader(ctx, tab) {
   const t = (name, label) => h('a', { href: `#/p/${k}/${name}`, class: tab === name ? 'on' : '' }, label);
   return [
     h('h1', ctx.project.name, ' ', h('span.muted.small', k)),
-    h('div.tabs', t('backlog', 'Backlog'), t('board', 'Board'), t('releases', 'Releases'), t('settings', 'Settings'),
+    h('div.tabs', t('backlog', 'Backlog'), t('board', 'Board'), t('epics', 'Epics'), t('releases', 'Releases'), t('settings', 'Settings'),
       h('span.spacer'), h('button.primary', { onclick: () => createIssueDialog(ctx, { board: tab === 'board' }) }, 'Create', h('span.wide', ' issue'))),
   ];
 }
@@ -428,7 +428,7 @@ function issuePicker(exclude, placeholder) {
 }
 
 // issueRow is one line in the backlog, a release or an epic. opts:
-// attrs (extra attributes), hideRelease, and, for rows that can be edited
+// attrs (extra attributes), hideRelease, hideEpic, and, for rows that can be edited
 // in place, redraw (called after a change) and menu (a function returning
 // more menu items).
 function issueRow(ctx, issue, opts) {
@@ -441,7 +441,7 @@ function issueRow(ctx, issue, opts) {
     h('span.key', { class: isDone(ctx.project, issue) ? 'done' : '' }, issue.key),
     sum,
     save ? iconButton('✎', 'Edit summary', editSummary) : null,
-    epicChip(ctx, issue),
+    opts.hideEpic ? null : epicChip(ctx, issue),
     !opts.hideRelease && issue.release && ctx.relById.get(issue.release) ? h('span.rel', ctx.relById.get(issue.release).name) : null,
     statusPill(ctx.project, issue.status),
     save ? prioButton(issue, save) : prioIcon(issue.priority),
@@ -664,18 +664,7 @@ async function pageBacklog(key) {
     }
     groups.push(none);
 
-    const epicsBox = fold(st.folds, 'epics', false,
-      h('summary.head', h('b', `Epics (${ctx.epics.length})`)),
-      ctx.epics.map((e) => {
-        const kids = ctx.issues.filter((i) => i.epic === e.id);
-        const done = kids.filter((i) => isDone(ctx.project, i)).length;
-        return h('div.row', { onclick: () => openIssue(e.key) },
-          typeIcon('Epic'), h('span.key', e.key), h('span.sum', e.summary),
-          h('span.muted.small', `${done}/${kids.length} done`), statusPill(ctx.project, e.status));
-      }),
-      h('div.quick', h('button.link', { onclick: () => createIssueDialog(ctx, { type: 'Epic' }) }, '+ Create epic')));
-
-    body.replaceChildren(epicsBox, section(board), ...groups.map((g) => section(g)));
+    body.replaceChildren(section(board), ...groups.map((g) => section(g)));
   };
 
   // Where a drop into a section moves an issue.
@@ -1014,6 +1003,57 @@ async function pageReleases(key) {
     released.length ? fold(st.folds, 'released', false, h('summary.head', h('b', `Released (${released.length})`)), released.map(row)) : '');
 }
 pageReleases.state = {};
+
+// The epics, each with the progress of its issues, as on Jira's timeline
+// (without the dates). Each epic folds out to its issues; epics in a done
+// status are in a folded section of their own, like released releases.
+async function pageEpics(key) {
+  const ctx = await loadProject(key);
+  topNav(await api('GET', '/api/projects'));
+  const st = pageEpics.state[key] || (pageEpics.state[key] = { open: new Set(), folds: {} });
+  const body = h('div');
+  const cat = (i) => (ctx.project.statuses.find((s) => s.id === i.status) || {}).category;
+
+  const row = (e) => {
+    const items = ctx.issues.filter((i) => i.epic === e.id && i.type !== 'Epic');
+    const done = items.filter((i) => cat(i) === 'done').length;
+    const prog = items.filter((i) => cat(i) === 'inprogress').length;
+    const pct = (n) => (items.length ? (100 * n) / items.length : 0) + '%';
+    const isOpen = st.open.has(e.id);
+    const toggle = (ev) => { ev.preventDefault(); if (isOpen) st.open.delete(e.id); else st.open.add(e.id); draw(); };
+    return h('div.relitem',
+      h('div.release',
+        h('div',
+          h('a', { href: '#', onclick: toggle }, h('b', (isOpen ? '▾ ' : '▸ ') + e.summary)), ' ',
+          h('span.muted.small', e.key)),
+        h('div', statusPill(ctx.project, e.status)),
+        h('div',
+          h('div.progress', h('div.d', { style: `width:${pct(done)}` }), h('div.p', { style: `width:${pct(prog)}` })),
+          h('div.small.muted', `${done} of ${items.length} done, ${prog} in progress`)),
+        h('div',
+          h('button.link', { onclick: () => openIssue(e.key) }, 'Open'),
+          h('button.link', {
+            onclick: () => createIssueDialog(ctx, { epic: e.key, onCreated: async () => { st.open.add(e.id); await reloadIssues(ctx); draw(); } }),
+          }, '+ Issue'))),
+      isOpen ? h('div.rel-issues', items.length
+        ? items.map((i) => issueRow(ctx, i, { hideEpic: true, redraw: draw })) : h('div.empty', 'No issues in this epic.')) : null);
+  };
+
+  const draw = () => {
+    const open = ctx.epics.filter((e) => cat(e) !== 'done');
+    const done = ctx.epics.filter((e) => cat(e) === 'done');
+    body.replaceChildren(
+      h('div.section', h('div.head', h('b', 'Epics'), h('span.muted.small', `${open.length} open`)),
+        open.length ? open.map(row) : h('div.empty', 'No open epics. Create one to group issues.')),
+      done.length ? fold(st.folds, 'done', false, h('summary.head', h('b', `Done (${done.length})`)), done.map(row)) : '');
+  };
+
+  $app.replaceChildren(...projectHeader(ctx, 'epics'),
+    h('div.toolbar', h('button', { onclick: () => createIssueDialog(ctx, { type: 'Epic' }) }, '+ New epic')),
+    body);
+  draw();
+}
+pageEpics.state = {};
 
 async function pageSettings(key) {
   const ctx = await loadProject(key);
@@ -1363,7 +1403,7 @@ async function route() {
     const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
     if (!META) META = await api('GET', '/api/meta');
     if (parts[0] === 'p' && parts[1]) {
-      const page = { backlog: pageBacklog, board: pageBoard, releases: pageReleases, settings: pageSettings }[parts[2] || 'backlog'];
+      const page = { backlog: pageBacklog, board: pageBoard, epics: pageEpics, releases: pageReleases, settings: pageSettings }[parts[2] || 'backlog'];
       await (page || pageBacklog)(parts[1]);
     } else if (parts[0] === 'i' && parts[1]) {
       await pageIssue(parts[1]);
