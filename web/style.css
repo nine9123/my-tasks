@@ -65,6 +65,8 @@ input.inline { flex: 1; min-width: 0; width: 100%; padding: 1px 6px; }
 .tabs { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; align-items: flex-end; }
 .tabs a { white-space: nowrap; padding: 6px 12px; color: var(--muted); border-bottom: 2px solid transparent; }
 .tabs a.on { color: var(--accent); border-color: var(--accent); }
+.tabs a { display: inline-flex; align-items: center; gap: 6px; }
+.tabs a .ico { color: inherit; }
 .tabs .spacer { flex: 1; }
 .tabs button { margin-bottom: 6px; white-space: nowrap; }
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
@@ -111,6 +113,14 @@ input.inline { flex: 1; min-width: 0; width: 100%; padding: 1px 6px; }
 
 /* board */
 .board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(230px, 1fr); gap: 10px; align-items: start; overflow-x: auto; }
+/* The map of the columns in the bottom right corner: the frame is the part
+   of the board in view. */
+.board-nav { position: fixed; right: 20px; bottom: 20px; width: 130px; height: 48px; padding: 4px; z-index: 10; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 2px 8px rgba(0, 0, 0, .2); cursor: pointer; touch-action: none; user-select: none; }
+.board-nav[hidden] { display: none; }
+.board-nav .nav-cols { position: absolute; inset: 4px; }
+.board-nav .nav-cols span { position: absolute; top: 0; bottom: 0; background: var(--line); border-radius: 2px; }
+.board-nav .nav-frame { position: absolute; top: 2px; bottom: 2px; margin-left: 4px; border: 2px solid var(--accent); border-radius: 4px; background: color-mix(in srgb, var(--accent) 12%, transparent); cursor: grab; }
+.board-nav.dragging, .board-nav.dragging .nav-frame { cursor: grabbing; }
 .col { background: var(--hover); border-radius: 6px; padding: 8px; min-height: 200px; }
 .col.drop { outline: 2px solid var(--accent); }
 .col > .head { font-size: 12px; font-weight: 600; text-transform: uppercase; color: var(--muted); margin: 2px 4px 8px; }
@@ -215,7 +225,7 @@ textarea.inline { flex: 1; min-width: 0; width: 100%; min-height: 0; padding: 1p
   .search-results { left: 0; width: auto; }
   #app { padding: 12px; }
   .tabs { gap: 0; }
-  .tabs a { padding: 6px 7px; }
+  .tabs a { padding: 6px 7px; gap: 4px; }
   .tabs .wide { display: none; }
   /* Rows put the summary on a line of its own, under the icons. */
   .row { flex-wrap: wrap; gap: 2px 6px; }
@@ -233,4 +243,6 @@ textarea.inline { flex: 1; min-width: 0; width: 100%; min-height: 0; padding: 1p
    issue itself. */
 @media (max-width: 400px) {
   .row .chip, .row .rel { display: none; }
+  /* The tabs keep to one line on a phone: the labels are enough. */
+  .tabs a .ico { display: none; }
 }

@@ -97,7 +97,7 @@ function statusPill(project, id) {
   const st = project.statuses.find((s) => s.id === id);
   return st ? h('span.pill.' + st.category, st.name) : h('span.pill', '?');
 }
-// Small line icons for the issue fields, drawn as SVG (h() makes HTML
+// Small line icons for the issue fields and the project tabs, drawn as SVG (h() makes HTML
 // elements only). Each is a list of [tag, attributes] on a 24x24 grid.
 const ICONS = {
   key: [['path', { d: 'M10 3 8 21M16 3l-2 18M4 8h17M3 16h17' }]],
@@ -108,6 +108,7 @@ const ICONS = {
   created: [['rect', { x: 3, y: 5, width: 18, height: 16, rx: 2 }], ['path', { d: 'M3 10h18M8 3v4M16 3v4' }]],
   updated: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M12 7v5l3 2' }]],
   resolved: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'm8 12 3 3 5-6' }]],
+  settings: [['circle', { cx: 12, cy: 12, r: 3 }], ['path', { d: 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z' }]],
 };
 function icon(name) {
   const ns = 'http://www.w3.org/2000/svg';
@@ -229,10 +230,11 @@ function epicChip(ctx, issue) {
 
 function projectHeader(ctx, tab) {
   const k = ctx.project.key;
-  const t = (name, label) => h('a', { href: `#/p/${k}/${name}`, class: tab === name ? 'on' : '' }, label);
+  const t = (name, ico, label) => h('a', { href: `#/p/${k}/${name}`, class: tab === name ? 'on' : '' }, icon(ico), label);
   return [
     h('h1', ctx.project.name, ' ', h('span.muted.small', k)),
-    h('div.tabs', t('backlog', 'Backlog'), t('board', 'Board'), t('epics', 'Epics'), t('releases', 'Releases'), t('settings', 'Settings'),
+    h('div.tabs', t('backlog', 'backlog', 'Backlog'), t('board', 'board', 'Board'), t('epics', 'epic', 'Epics'),
+      t('releases', 'release', 'Releases'), t('settings', 'settings', 'Settings'),
       h('span.spacer'), h('button.primary', { onclick: () => createIssueDialog(ctx, { board: tab === 'board' }) }, 'Create', h('span.wide', ' issue'))),
   ];
 }
@@ -800,11 +802,63 @@ function boardTarget(list, y) {
 
 const byRank = (a, b) => a.rank - b.rank || a.number - b.number;
 
+// boardNavigator is the small map of the board's columns in the bottom
+// right corner, as on Jira's boards: drag the frame (or click beside it) to
+// scroll the board sideways without going down to its scrollbar. It hides
+// itself while the whole board fits.
+function boardNavigator(board) {
+  const W = 120; // width of the map in px; the height is fixed in the CSS
+  const cols = h('div.nav-cols');
+  const frame = h('div.nav-frame');
+  const nav = h('div.board-nav', { title: 'Drag to scroll the board', hidden: true }, cols, frame);
+  let scale = 1;
+
+  const update = () => {
+    const sw = board.scrollWidth, cw = board.clientWidth;
+    nav.hidden = sw <= cw + 1;
+    if (nav.hidden) return;
+    scale = W / sw;
+    const left = board.getBoundingClientRect().left - board.scrollLeft;
+    cols.replaceChildren(...[...board.children].map((c) => {
+      const r = c.getBoundingClientRect();
+      return h('span', { style: `left:${(r.left - left) * scale}px;width:${r.width * scale}px` });
+    }));
+    frame.style.left = board.scrollLeft * scale + 'px';
+    frame.style.width = cw * scale + 'px';
+  };
+
+  // grab is where in the frame the pointer holds it, in map px.
+  let grab = null;
+  const scrollTo = (e) => {
+    const x = e.clientX - nav.getBoundingClientRect().left;
+    board.scrollLeft = (x - grab) / scale;
+  };
+  nav.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const fw = frame.offsetWidth;
+    // Grabbed beside the frame: centre it under the pointer first.
+    grab = e.target === frame ? e.clientX - frame.getBoundingClientRect().left : fw / 2;
+    nav.setPointerCapture(e.pointerId);
+    nav.classList.add('dragging');
+    scrollTo(e);
+  });
+  nav.addEventListener('pointermove', (e) => { if (grab !== null) scrollTo(e); });
+  const release = () => { grab = null; nav.classList.remove('dragging'); };
+  nav.addEventListener('pointerup', release);
+  nav.addEventListener('pointercancel', release);
+
+  board.addEventListener('scroll', update, { passive: true });
+  new ResizeObserver(update).observe(board);
+  return { el: nav, update };
+}
+
 async function pageBoard(key) {
   const ctx = await loadProject(key);
   topNav(await api('GET', '/api/projects'));
   const st = pageBoard.state[key] || (pageBoard.state[key] = { release: 'open', epic: '', q: '' });
   const board = h('div.board');
+  const nav = boardNavigator(board);
   const DONE_LIMIT = 30;
   // Like Jira's boards, the unreleased work shows done issues only for two
   // weeks after they were resolved.
@@ -903,6 +957,7 @@ async function pageBoard(key) {
       });
       return col;
     }));
+    nav.update();
   };
 
   const relOpts = [['open', 'Unreleased work'], ['all', 'Everything'], ['none', 'No release'],
@@ -914,7 +969,7 @@ async function pageBoard(key) {
       select(relOpts, st.release, (v) => { st.release = v; draw(); }),
       select(epicOpts, st.epic, (v) => { st.epic = v; draw(); }),
       h('span.muted.small', 'Issues in the backlog are not shown here: send them to the board from the backlog.')),
-    board);
+    board, nav.el);
   draw();
 }
 pageBoard.state = {};
