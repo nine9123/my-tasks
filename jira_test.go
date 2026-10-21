@@ -134,6 +134,9 @@ func TestImportJira(t *testing.T) {
 	if testing, _ := s.Issue("WAR-10"); statusName(&p, testing.StatusID) != "Testing" {
 		t.Fatal("TESTING should map to Testing")
 	}
+	if testing, _ := s.Issue("WAR-10"); i.Board || !done.Board || !testing.Board {
+		t.Fatal("to-do issues go to the backlog, the others onto the board")
+	}
 
 	// Backlog order follows Jira's rank, not the key.
 	is, _ := s.Issues("WAR", IssueFilter{})

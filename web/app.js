@@ -191,6 +191,12 @@ async function loadProject(key) {
   return { project, releases, issues, byId, epics, relById: new Map(releases.map((r) => [r.id, r])) };
 }
 
+async function reloadIssues(ctx) {
+  ctx.issues = await api('GET', `/api/projects/${ctx.project.key}/issues`);
+  ctx.byId = new Map(ctx.issues.map((i) => [i.id, i]));
+  ctx.epics = ctx.issues.filter((i) => i.type === 'Epic');
+}
+
 function epicChip(ctx, issue) {
   const e = issue.epic && ctx.byId.get(issue.epic);
   return e ? h('span.chip', { title: e.summary }, e.summary) : null;
@@ -202,19 +208,139 @@ function projectHeader(ctx, tab) {
   return [
     h('h1', ctx.project.name, ' ', h('span.muted.small', k)),
     h('div.tabs', t('backlog', 'Backlog'), t('board', 'Board'), t('releases', 'Releases'), t('settings', 'Settings'),
-      h('span.spacer'), h('button.primary', { onclick: () => createIssueDialog(ctx) }, 'Create issue')),
+      h('span.spacer'), h('button.primary', { onclick: () => createIssueDialog(ctx, { board: tab === 'board' }) }, 'Create issue')),
   ];
 }
 
-function issueRow(ctx, issue, extra, hideRelease) {
-  return h('div.row', Object.assign({ onclick: () => { location.hash = `#/i/${issue.key}`; } }, extra || {}),
-    typeIcon(issue.type),
+// ---------- popup menu ----------
+
+// popMenu shows a list of actions under anchor. items: { label, icon,
+// on (marks the current choice), onclick } or '-' for a separator; falsy
+// items are skipped. Clicking the anchor again closes it.
+function popMenu(anchor, items) {
+  const again = popMenu.anchor === anchor;
+  closeMenu();
+  if (again) return;
+  const m = h('div.menu', { role: 'menu' }, items.filter(Boolean).map((it) => (it === '-' ? h('div.sep')
+    : h('button', {
+      class: it.on ? 'on' : '',
+      onclick: (e) => { e.stopPropagation(); closeMenu(); it.onclick(); },
+    }, it.icon || null, it.label))));
+  document.body.append(m);
+  const r = anchor.getBoundingClientRect();
+  m.style.left = Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8)) + 'px';
+  m.style.top = (r.bottom + m.offsetHeight + 4 > innerHeight ? Math.max(8, r.top - m.offsetHeight - 4) : r.bottom + 4) + 'px';
+  popMenu.el = m;
+  popMenu.anchor = anchor;
+}
+
+function closeMenu() {
+  if (popMenu.el) popMenu.el.remove();
+  popMenu.el = popMenu.anchor = null;
+}
+
+document.addEventListener('mousedown', (e) => {
+  const m = popMenu.el;
+  if (m && !m.contains(e.target) && !popMenu.anchor.contains(e.target)) closeMenu();
+}, true);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && popMenu.el) { e.preventDefault(); closeMenu(); } }, true);
+window.addEventListener('resize', closeMenu);
+document.addEventListener('scroll', (e) => { if (popMenu.el && !popMenu.el.contains(e.target)) closeMenu(); }, true);
+
+// ---------- inline edits on backlog rows and board cards ----------
+
+// issueEditor returns a function that patches the issue and redraws.
+function issueEditor(issue, redraw) {
+  return async (patch) => {
+    Object.assign(issue, await api('PATCH', `/api/issues/${issue.key}`, patch));
+    redraw();
+  };
+}
+
+// editInline swaps el for a text input. Enter or leaving the field saves,
+// Escape puts el back unchanged.
+function editInline(el, value, save) {
+  const input = h('input.inline', { type: 'text', value, onclick: (e) => e.stopPropagation() });
+  // Text in a draggable element can't be selected with the mouse.
+  const drag = el.closest('[draggable=true]');
+  if (drag) drag.setAttribute('draggable', 'false');
+  let done = false;
+  const restore = () => {
+    input.replaceWith(el);
+    if (drag) drag.setAttribute('draggable', 'true');
+  };
+  const finish = async (ok) => {
+    if (done) return;
+    done = true;
+    const v = input.value.trim();
+    if (!ok || !v || v === value) { restore(); return; }
+    try { await save(v); } catch (err) { restore(); throw err; }
+  };
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener('blur', () => finish(true));
+  el.replaceWith(input);
+  input.focus();
+  input.select();
+}
+
+function typeButton(issue, save) {
+  if (issue.type === 'Epic') return typeIcon('Epic');
+  const b = h('button.icon', {
+    title: `${issue.type}: change type`,
+    onclick: (e) => {
+      e.stopPropagation();
+      popMenu(b, META.types.filter((t) => t !== 'Epic').map((t) => ({
+        icon: typeIcon(t), label: t, on: t === issue.type, onclick: () => { if (t !== issue.type) save({ type: t }); },
+      })));
+    },
+  }, typeIcon(issue.type));
+  return b;
+}
+
+function prioButton(issue, save) {
+  const b = h('button.icon', {
+    title: `${issue.priority}: change priority`,
+    onclick: (e) => {
+      e.stopPropagation();
+      popMenu(b, META.priorities.map((p) => ({
+        icon: prioIcon(p), label: p, on: p === issue.priority, onclick: () => { if (p !== issue.priority) save({ priority: p }); },
+      })));
+    },
+  }, prioIcon(issue.priority));
+  return b;
+}
+
+function iconButton(label, title, onclick) {
+  return h('button.icon.hover', { title, onclick: (e) => { e.stopPropagation(); onclick(e.currentTarget); } }, label);
+}
+
+// issueRow is one line in the backlog, a release or an epic. opts:
+// attrs (extra attributes), hideRelease, and, for rows that can be edited
+// in place, redraw (called after a change) and menu (a function returning
+// more menu items).
+function issueRow(ctx, issue, opts) {
+  opts = opts || {};
+  const sum = h('span.sum', issue.summary);
+  const save = opts.redraw && issueEditor(issue, opts.redraw);
+  const editSummary = () => editInline(sum, issue.summary, (v) => save({ summary: v }));
+  return h('div.row', Object.assign({ onclick: () => openIssue(issue.key) }, opts.attrs || {}),
+    save ? typeButton(issue, save) : typeIcon(issue.type),
     h('span.key', { class: isDone(ctx.project, issue) ? 'done' : '' }, issue.key),
-    h('span.sum', issue.summary),
+    sum,
+    save ? iconButton('✎', 'Edit summary', editSummary) : null,
     epicChip(ctx, issue),
-    !hideRelease && issue.release && ctx.relById.get(issue.release) ? h('span.rel', ctx.relById.get(issue.release).name) : null,
+    !opts.hideRelease && issue.release && ctx.relById.get(issue.release) ? h('span.rel', ctx.relById.get(issue.release).name) : null,
     statusPill(ctx.project, issue.status),
-    prioIcon(issue.priority));
+    save ? prioButton(issue, save) : prioIcon(issue.priority),
+    save ? iconButton('⋯', 'More actions', (b) => popMenu(b, [
+      { label: 'Open', onclick: () => openIssue(issue.key) },
+      { label: 'Edit summary', onclick: editSummary },
+      ...(opts.menu ? ['-', ...opts.menu()] : []),
+    ])) : null);
 }
 
 // ---------- create issue ----------
@@ -223,7 +349,7 @@ function createIssueDialog(ctx, preset) {
   preset = preset || {};
   const f = {
     type: preset.type || 'Task', summary: '', description: '', priority: 'Medium',
-    release: preset.release || 0, epic: preset.epic || '',
+    release: preset.release || 0, epic: preset.epic || '', board: !!preset.board,
   };
   const relOpts = [[0, '— none —'], ...ctx.releases.filter((r) => !r.released).map((r) => [r.id, r.name])];
   const epicOpts = [['', '— none —'], ...ctx.epics.map((e) => [e.key, `${e.key} ${e.summary}`])];
@@ -237,13 +363,14 @@ function createIssueDialog(ctx, preset) {
         h('label', 'Priority'), select(META.priorities.map((p) => [p, p]), f.priority, (v) => { f.priority = v; }),
         h('label', 'Release'), select(relOpts, f.release, (v) => { f.release = +v; }),
         h('label', 'Epic'), select(epicOpts, f.epic, (v) => { f.epic = v; }),
+        h('label', 'Board'), h('label', h('input', { type: 'checkbox', checked: f.board, onchange: (e) => { f.board = e.target.checked; } }), ' Put it on the board'),
         h('label', 'Description'), h('textarea', { oninput: (e) => { f.description = e.target.value; } })),
       h('div.actions',
         h('button', { type: 'button', onclick: () => dlg.close() }, 'Cancel'),
         h('button.primary', { type: 'submit' }, 'Create'))));
   async function submit(e) {
     e.preventDefault();
-    const body = { type: f.type, summary: f.summary, description: f.description, priority: f.priority, release: f.release };
+    const body = { type: f.type, summary: f.summary, description: f.description, priority: f.priority, release: f.release, board: f.board };
     if (f.epic && f.type !== 'Epic') body.epic = f.epic;
     const issue = await api('POST', `/api/projects/${ctx.project.key}/issues`, body);
     dlg.close();
@@ -259,6 +386,7 @@ function createIssueDialog(ctx, preset) {
 // ---------- pages ----------
 
 function showLogin() {
+  closeIssueModal();
   $nav.replaceChildren();
   const input = h('input', { type: 'password', placeholder: 'API key', autocomplete: 'current-password' });
   $app.replaceChildren(h('form.panel.login', {
@@ -275,9 +403,90 @@ function topNav(projects) {
   $nav.replaceChildren(
     ...(projects || []).map((p) => h('a', { href: `#/p/${p.key}/backlog` }, p.key)),
     h('span.spacer'),
+    searchBox(),
     h('a', { href: '#/import' }, 'Import from Jira'),
     h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); showLogin(); } }, 'Sign out'));
 }
+
+// ---------- search ----------
+
+// searchBox is the issue search in the header, over all projects. It is
+// built once and kept, so the query survives moving between pages.
+function searchBox() {
+  if (searchBox.el) return searchBox.el;
+  const input = h('input.search', { type: 'search', placeholder: 'Search issues  /', autocomplete: 'off', 'aria-label': 'Search issues' });
+  const list = h('div.search-results', { hidden: true });
+  let hits = [];
+  let sel = 0;
+  let seq = 0;
+  let shownQ = null;
+  let timer = null;
+
+  const show = () => {
+    list.replaceChildren(...(hits.length ? hits.map((hit, k) => h('div.hit', {
+      class: k === sel ? 'on' : '',
+      onmousedown: (e) => e.preventDefault(), // keep the focus in the input
+      onclick: () => pick(hit),
+    }, typeIcon(hit.type), h('span.key', hit.key), h('span.sum', hit.summary),
+    h('span.pill' + (hit.done ? '.done' : ''), hit.status))) : [h('div.empty', 'No issues found.')]));
+    list.hidden = false;
+  };
+  const run = async () => {
+    clearTimeout(timer);
+    timer = null;
+    const q = input.value.trim();
+    const n = ++seq;
+    if (!q) { hits = []; shownQ = q; list.hidden = true; return; }
+    const r = await api('GET', '/api/search?q=' + encodeURIComponent(q));
+    if (n !== seq) return; // a newer search is under way
+    hits = r;
+    sel = 0;
+    shownQ = q;
+    show();
+  };
+  const pick = (hit) => {
+    list.hidden = true;
+    input.blur();
+    openIssue(hit.key);
+  };
+
+  input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 150); });
+  input.addEventListener('focus', () => { if (input.value.trim() && shownQ === input.value.trim()) show(); });
+  input.addEventListener('blur', () => { list.hidden = true; });
+  input.addEventListener('keydown', async (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!hits.length) return;
+      sel = (sel + (e.key === 'ArrowDown' ? 1 : hits.length - 1)) % hits.length;
+      show();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (shownQ !== input.value.trim()) await run();
+      if (hits[sel]) pick(hits[sel]);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      if (!list.hidden) list.hidden = true; else input.blur();
+    }
+  });
+  searchBox.hide = () => { list.hidden = true; input.blur(); };
+  searchBox.input = input;
+  searchBox.el = h('div.searchbox', input, list);
+  return searchBox.el;
+}
+
+function hideSearch() {
+  if (searchBox.hide) searchBox.hide();
+}
+
+// "/" anywhere but in a field jumps to the search.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || modal.dlg || !searchBox.input || !searchBox.input.isConnected) return;
+  const t = e.target;
+  if (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+  e.preventDefault();
+  searchBox.input.focus();
+  searchBox.input.select();
+});
 
 async function pageProjects() {
   const projects = await api('GET', '/api/projects');
@@ -301,13 +510,32 @@ async function pageProjects() {
     h('button.primary', { type: 'submit' }, 'Create')));
 }
 
-// Drag and drop in the backlog: rows reorder, sections set the release.
+// The key of the issue being dragged, in the backlog and on the board.
 let dragKey = null;
 
+function endDrag() {
+  dragKey = null;
+  dropLine.remove();
+  for (const el of document.querySelectorAll('.drop, .drop-before, .drop-after')) el.classList.remove('drop', 'drop-before', 'drop-after');
+}
+document.addEventListener('dragend', endDrag);
+
+// Folding sections (details elements) remember whether they are open
+// across redraws: state[name] holds it, def is the first value.
+function fold(state, name, def, summary, ...kids) {
+  if (state[name] === undefined) state[name] = def;
+  const d = h('details.section', { open: state[name] }, summary, ...kids);
+  d.addEventListener('toggle', () => { state[name] = d.open; });
+  return d;
+}
+
+// Drag and drop in the backlog: rows reorder; dropping into a release's
+// section sets the release and takes the issue off the board, dropping into
+// the board section puts it on the board.
 async function pageBacklog(key) {
   const ctx = await loadProject(key);
   topNav(await api('GET', '/api/projects'));
-  const st = pageBacklog.state[key] || (pageBacklog.state[key] = { q: '', type: '', epic: '', showDone: false });
+  const st = pageBacklog.state[key] || (pageBacklog.state[key] = { q: '', type: '', epic: '', showDone: false, folds: {} });
   const body = h('div');
 
   const draw = () => {
@@ -319,104 +547,128 @@ async function pageBacklog(key) {
       && (!q || (i.key + ' ' + i.summary).toLowerCase().includes(q)));
     const groups = ctx.releases.filter((r) => st.showDone || !r.released).map((r) => ({ release: r, items: [] }));
     const none = { release: null, items: [] };
+    const board = { board: true, items: [] };
     for (const i of visible) {
+      if (i.board) { board.items.push(i); continue; }
       const g = groups.find((x) => x.release.id === i.release);
       if (g) g.items.push(i); else if (!i.release || !st.showDone) none.items.push(i);
     }
     groups.push(none);
 
-    const epicsBox = h('details.section',
+    const epicsBox = fold(st.folds, 'epics', false,
       h('summary.head', h('b', `Epics (${ctx.epics.length})`)),
       ctx.epics.map((e) => {
         const kids = ctx.issues.filter((i) => i.epic === e.id);
         const done = kids.filter((i) => isDone(ctx.project, i)).length;
-        return h('div.row', { onclick: () => { location.hash = `#/i/${e.key}`; } },
+        return h('div.row', { onclick: () => openIssue(e.key) },
           typeIcon('Epic'), h('span.key', e.key), h('span.sum', e.summary),
           h('span.muted.small', `${done}/${kids.length} done`), statusPill(ctx.project, e.status));
       }),
       h('div.quick', h('button.link', { onclick: () => createIssueDialog(ctx, { type: 'Epic' }) }, '+ Create epic')));
 
-    body.replaceChildren(epicsBox, ...groups.map((g) => section(g)));
+    body.replaceChildren(epicsBox, section(board), ...groups.map((g) => section(g)));
   };
 
-  // Index of a release's section in body (the epics box comes first).
-  const groupIndex = (relId) => {
-    const shown = ctx.releases.filter((r) => st.showDone || !r.released);
-    const k = shown.findIndex((r) => r.id === relId);
-    return 1 + (k < 0 ? shown.length : k);
-  };
+  // Where a drop into a section moves an issue.
+  const targetOf = (g) => (g.board ? { board: true } : { release: g.release ? g.release.id : 0 });
 
   const section = (g) => {
     const rel = g.release;
     const relId = rel ? rel.id : 0;
-    const quick = h('input', { type: 'text', placeholder: '+ What needs to be done? (Enter)' });
-    const quickType = select(META.types.filter((t) => t !== 'Epic').map((t) => [t, t]), 'Task', () => {});
-    quick.addEventListener('keydown', async (e) => {
-      if (e.key !== 'Enter' || !quick.value.trim()) return;
-      const data = { summary: quick.value, type: quickType.value, release: relId };
-      if (st.epic) data.epic = ctx.byId.get(+st.epic).key;
-      const issue = await api('POST', `/api/projects/${key}/issues`, data);
-      ctx.issues.push(issue);
-      ctx.byId.set(issue.id, issue);
-      draw();
-      // draw() rebuilt the section: keep typing in the new input.
-      const again = body.querySelectorAll('.section')[groupIndex(relId)];
-      if (again) again.querySelector('.quick input').focus();
+    const target = targetOf(g);
+    const rows = g.items.map((i, k) => {
+      const row = issueRow(ctx, i, {
+        attrs: { draggable: 'true' },
+        hideRelease: !!rel,
+        redraw: draw,
+        menu: () => [
+          i.board ? { label: 'Send to backlog', onclick: () => issueEditor(i, draw)({ board: false }) }
+            : { label: 'Send to board', onclick: () => issueEditor(i, draw)({ board: true }) },
+          k > 0 ? { label: 'Move to top', onclick: () => moveIssue(i.key, target, { before: g.items[0].key }) } : null,
+          k < g.items.length - 1 ? { label: 'Move to bottom', onclick: () => moveIssue(i.key, target, { after: g.items[g.items.length - 1].key }) } : null,
+        ],
+      });
+      row.addEventListener('dragstart', (e) => { dragKey = i.key; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', i.key); });
+      row.addEventListener('dragover', (e) => {
+        if (!dragKey || dragKey === i.key) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const after = e.offsetY > row.offsetHeight / 2;
+        row.classList.toggle('drop-before', !after);
+        row.classList.toggle('drop-after', after);
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('drop-before', 'drop-after'));
+      row.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const after = row.classList.contains('drop-after');
+        row.classList.remove('drop-before', 'drop-after');
+        await moveIssue(dragKey, target, after ? { after: i.key } : { before: i.key });
+      });
+      return row;
     });
-    const sec = h('div.section',
-      h('div.head',
-        h('b', rel ? rel.name : 'Backlog'),
-        h('span.muted.small', `${g.items.length} issues`),
-        rel && rel.releaseDate ? h('span.muted.small', 'release ' + fmtDate(rel.releaseDate)) : null,
-        rel && rel.released ? h('span.pill.done', 'released') : null),
-      g.items.length ? null : h('div.empty', 'Nothing here. Drag issues in, or add one below.'),
-      g.items.map((i) => {
-        const row = issueRow(ctx, i, { draggable: 'true' }, !!rel);
-        row.addEventListener('dragstart', (e) => { dragKey = i.key; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', i.key); });
-        row.addEventListener('dragover', (e) => {
-          if (!dragKey || dragKey === i.key) return;
-          e.preventDefault();
-          e.stopPropagation();
-          const after = e.offsetY > row.offsetHeight / 2;
-          row.classList.toggle('drop-before', !after);
-          row.classList.toggle('drop-after', after);
-        });
-        row.addEventListener('dragleave', () => row.classList.remove('drop-before', 'drop-after'));
-        row.addEventListener('drop', async (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const after = row.classList.contains('drop-after');
-          row.classList.remove('drop-before', 'drop-after');
-          await moveIssue(dragKey, relId, after ? { after: i.key } : { before: i.key });
-        });
-        return row;
-      }),
-      h('div.quick', quickType, quick));
+
+    let quick = null;
+    if (!g.board) {
+      const input = h('input', { type: 'text', placeholder: '+ What needs to be done? (Enter)' });
+      const quickType = select(META.types.filter((t) => t !== 'Epic').map((t) => [t, t]), 'Task', () => {});
+      input.addEventListener('keydown', async (e) => {
+        if (e.key !== 'Enter' || !input.value.trim()) return;
+        const data = { summary: input.value, type: quickType.value, release: relId };
+        if (st.epic) data.epic = ctx.byId.get(+st.epic).key;
+        const issue = await api('POST', `/api/projects/${key}/issues`, data);
+        ctx.issues.push(issue);
+        ctx.byId.set(issue.id, issue);
+        draw();
+        // draw() rebuilt the section: keep typing in the new input.
+        const again = body.querySelector(`.section[data-rel="${relId}"] .quick input`);
+        if (again) again.focus();
+      });
+      quick = h('div.quick', quickType, input);
+    }
+
+    const head = [
+      h('b', g.board ? 'Board' : rel ? rel.name : 'Backlog'),
+      h('span.muted.small', `${g.items.length} issues`),
+      rel && rel.releaseDate ? h('span.muted.small', 'release ' + fmtDate(rel.releaseDate)) : null,
+      rel && rel.released ? h('span.pill.done', 'released') : null,
+    ];
+    const empty = g.items.length ? null
+      : h('div.empty', g.board ? 'Nothing on the board. Drag issues here, or use Send to board in their ⋯ menu.' : 'Nothing here. Drag issues in, or add one below.');
+    const sec = g.board ? fold(st.folds, 'board', true, h('summary.head', head), empty, rows)
+      : h('div.section', { 'data-rel': relId }, h('div.head', head), empty, rows, quick);
     sec.addEventListener('dragover', (e) => { if (dragKey) { e.preventDefault(); sec.classList.add('drop'); } });
     sec.addEventListener('dragleave', (e) => { if (!sec.contains(e.relatedTarget)) sec.classList.remove('drop'); });
     sec.addEventListener('drop', async (e) => {
       e.preventDefault();
       sec.classList.remove('drop');
       const last = g.items[g.items.length - 1];
-      await moveIssue(dragKey, relId, last && last.key !== dragKey ? { after: last.key } : null);
+      await moveIssue(dragKey, target, last && last.key !== dragKey ? { after: last.key } : null);
     });
     return sec;
   };
 
-  async function moveIssue(k, relId, rank) {
+  // moveIssue puts an issue into a section (target from targetOf) and, with
+  // rank, before or after another issue.
+  async function moveIssue(k, target, rank) {
     const issue = ctx.issues.find((i) => i.key === k);
     dragKey = null;
     if (!issue) return;
-    // Open issues of a released (hidden) release are drawn under Backlog:
-    // reordering them there must not clear their release.
-    const drawnIn = ctx.releases.some((r) => r.id === issue.release && (st.showDone || !r.released)) ? issue.release : 0;
-    if (drawnIn !== relId) Object.assign(issue, await api('PATCH', `/api/issues/${k}`, { release: relId }));
+    const patch = {};
+    if (target.board) {
+      if (!issue.board) patch.board = true;
+    } else {
+      if (issue.board) patch.board = false;
+      // Open issues of a released (hidden) release are drawn under Backlog:
+      // reordering them there must not clear their release.
+      const drawnIn = ctx.releases.some((r) => r.id === issue.release && (st.showDone || !r.released)) ? issue.release : 0;
+      if (drawnIn !== target.release) patch.release = target.release;
+    }
+    if (Object.keys(patch).length) Object.assign(issue, await api('PATCH', `/api/issues/${k}`, patch));
     if (rank) {
-      const r = await api('POST', `/api/issues/${k}/rank`, rank);
-      issue.rank = r.rank;
-      // Respacing may have moved others too: reload when that happened.
-      ctx.issues = await api('GET', `/api/projects/${key}/issues`);
-      ctx.byId = new Map(ctx.issues.map((i) => [i.id, i]));
+      await api('POST', `/api/issues/${k}/rank`, rank);
+      // Respacing may have moved others too: reload.
+      await reloadIssues(ctx);
     }
     draw();
   }
@@ -433,6 +685,23 @@ async function pageBacklog(key) {
 }
 pageBacklog.state = {};
 
+// The line showing where a card dragged on the board will land.
+const dropLine = h('div.drop-line');
+
+// boardTarget finds where a card dropped at height y in a column's list
+// goes: before the first card whose middle is below y, else after the last.
+function boardTarget(list, y) {
+  const cards = [...list.children].filter((c) => c.classList.contains('card') && c.dataset.key !== dragKey);
+  for (const c of cards) {
+    const r = c.getBoundingClientRect();
+    if (y < r.top + r.height / 2) return { el: c, rank: { before: c.dataset.key } };
+  }
+  const last = cards[cards.length - 1];
+  return { el: null, rank: last ? { after: last.dataset.key } : null };
+}
+
+const byRank = (a, b) => a.rank - b.rank || a.number - b.number;
+
 async function pageBoard(key) {
   const ctx = await loadProject(key);
   topNav(await api('GET', '/api/projects'));
@@ -440,11 +709,48 @@ async function pageBoard(key) {
   const board = h('div.board');
   const DONE_LIMIT = 30;
 
+  // moveCard puts an issue into a column and, with rank, before or after
+  // another card.
+  const moveCard = async (k, status, rank) => {
+    const issue = ctx.issues.find((i) => i.key === k);
+    if (!issue) return;
+    if (issue.status !== status) Object.assign(issue, await api('PATCH', `/api/issues/${k}`, { status }));
+    if (rank && (rank.before || rank.after) !== k) {
+      await api('POST', `/api/issues/${k}/rank`, rank);
+      await reloadIssues(ctx);
+    }
+    draw();
+  };
+
+  const card = (i, s, items) => {
+    const save = issueEditor(i, draw);
+    const rel = ctx.relById.get(i.release);
+    const sum = h('div.csum', i.summary);
+    const editSummary = () => editInline(sum, i.summary, (v) => save({ summary: v }));
+    const k = items.indexOf(i);
+    const c = h('div.card', { draggable: 'true', 'data-key': i.key, onclick: () => openIssue(i.key) },
+      h('div.ctop', sum,
+        iconButton('✎', 'Edit summary', editSummary),
+        iconButton('⋯', 'More actions', (b) => popMenu(b, [
+          { label: 'Open', onclick: () => openIssue(i.key) },
+          { label: 'Edit summary', onclick: editSummary },
+          '-',
+          k > 0 ? { label: 'Move to top', onclick: () => moveCard(i.key, s.id, { before: items[0].key }) } : null,
+          k < items.length - 1 ? { label: 'Move to bottom', onclick: () => moveCard(i.key, s.id, { after: items[items.length - 1].key }) } : null,
+          { label: 'Send to backlog', onclick: () => save({ board: false }) },
+        ]))),
+      h('div.meta', typeButton(i, save), prioButton(i, save), epicChip(ctx, i),
+        rel ? h('span.rel', rel.name) : null, h('span.key', i.key)));
+    c.addEventListener('dragstart', (e) => { dragKey = i.key; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', i.key); });
+    return c;
+  };
+
   const draw = () => {
     const q = st.q.toLowerCase();
     const rel = (i) => ctx.relById.get(i.release);
+    // Issues still in the backlog are not on the board.
     const visible = ctx.issues.filter((i) => {
-      if (i.type === 'Epic') return false;
+      if (i.type === 'Epic' || !i.board) return false;
       if (st.epic && String(i.epic) !== st.epic) return false;
       if (q && !(i.key + ' ' + i.summary).toLowerCase().includes(q)) return false;
       if (st.release === 'open') return rel(i) ? !rel(i).released : !isDone(ctx.project, i);
@@ -456,31 +762,34 @@ async function pageBoard(key) {
       let items = visible.filter((i) => i.status === s.id);
       let more = 0;
       if (s.category === 'done') {
+        // Only the most recently resolved, in board order like the rest.
         items.sort((a, b) => (b.resolved || '').localeCompare(a.resolved || ''));
         more = Math.max(0, items.length - DONE_LIMIT);
-        items = items.slice(0, DONE_LIMIT);
+        items = items.slice(0, DONE_LIMIT).sort(byRank);
       }
+      const list = h('div.clist', items.map((i) => card(i, s, items)));
       const col = h('div.col',
         h('div.head', `${s.name} `, h('span', String(items.length + more))),
-        items.map((i) => {
-          const card = h('div.card', { draggable: 'true', onclick: () => { location.hash = `#/i/${i.key}`; } },
-            h('div', i.summary),
-            h('div.meta', typeIcon(i.type), prioIcon(i.priority), epicChip(ctx, i),
-              rel(i) ? h('span.rel', rel(i).name) : null, h('span.key', i.key)));
-          card.addEventListener('dragstart', (e) => { dragKey = i.key; e.dataTransfer.setData('text/plain', i.key); });
-          return card;
-        }),
+        list,
         more ? h('div.muted.small', `${more} older not shown`) : null);
-      col.addEventListener('dragover', (e) => { if (dragKey) { e.preventDefault(); col.classList.add('drop'); } });
-      col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) col.classList.remove('drop'); });
+      col.addEventListener('dragover', (e) => {
+        if (!dragKey) return;
+        e.preventDefault();
+        col.classList.add('drop');
+        const t = boardTarget(list, e.clientY);
+        if (t.el) { if (dropLine.nextSibling !== t.el) list.insertBefore(dropLine, t.el); } else if (list.lastChild !== dropLine) list.append(dropLine);
+      });
+      col.addEventListener('dragleave', (e) => {
+        if (col.contains(e.relatedTarget)) return;
+        col.classList.remove('drop');
+        dropLine.remove();
+      });
       col.addEventListener('drop', async (e) => {
         e.preventDefault();
-        col.classList.remove('drop');
-        const issue = ctx.issues.find((i) => i.key === dragKey);
-        dragKey = null;
-        if (!issue || issue.status === s.id) return;
-        Object.assign(issue, await api('PATCH', `/api/issues/${issue.key}`, { status: s.id }));
-        draw();
+        const k = dragKey;
+        const t = boardTarget(list, e.clientY);
+        endDrag();
+        if (k) await moveCard(k, s.id, t.rank);
       });
       return col;
     }));
@@ -493,7 +802,8 @@ async function pageBoard(key) {
     h('div.toolbar',
       h('input', { type: 'text', placeholder: 'Filter…', value: st.q, oninput: (e) => { st.q = e.target.value; draw(); } }),
       select(relOpts, st.release, (v) => { st.release = v; draw(); }),
-      select(epicOpts, st.epic, (v) => { st.epic = v; draw(); })),
+      select(epicOpts, st.epic, (v) => { st.epic = v; draw(); }),
+      h('span.muted.small', 'Issues in the backlog are not shown here: send them to the board from the backlog.')),
     board);
   draw();
 }
@@ -526,10 +836,13 @@ function releaseDialog(ctx, rel) {
   dlg.showModal();
 }
 
+// Each release folds out to its issues. Folding one changes only that
+// release's list: redrawing the page would also rebuild the Released
+// section around it, closing it again.
 async function pageReleases(key) {
   const ctx = await loadProject(key);
   topNav(await api('GET', '/api/projects'));
-  const open = new Set(pageReleases.open[key] || (pageReleases.open[key] = new Set()));
+  const st = pageReleases.state[key] || (pageReleases.state[key] = { open: new Set(), folds: {} });
 
   const row = (r) => {
     const items = ctx.issues.filter((i) => i.release === r.id && i.type !== 'Epic');
@@ -537,12 +850,19 @@ async function pageReleases(key) {
     const done = items.filter((i) => cat(i) === 'done').length;
     const prog = items.filter((i) => cat(i) === 'inprogress').length;
     const pct = (n) => (items.length ? (100 * n) / items.length : 0) + '%';
-    const isOpen = open.has(r.id);
-    return [
+    const title = h('b');
+    const list = h('div.rel-issues');
+    const show = () => {
+      const isOpen = st.open.has(r.id);
+      title.textContent = (isOpen ? '▾ ' : '▸ ') + r.name;
+      list.hidden = !isOpen;
+      list.replaceChildren(...(!isOpen ? [] : items.length ? items.map((i) => issueRow(ctx, i, { hideRelease: true })) : [h('div.empty', 'No issues.')]));
+    };
+    show();
+    return h('div.relitem',
       h('div.release',
         h('div',
-          h('a', { href: '#', onclick: (e) => { e.preventDefault(); if (isOpen) open.delete(r.id); else open.add(r.id); pageReleases.open[key] = open; draw(); } },
-            h('b', (isOpen ? '▾ ' : '▸ ') + r.name)), ' ',
+          h('a', { href: '#', onclick: (e) => { e.preventDefault(); if (st.open.has(r.id)) st.open.delete(r.id); else st.open.add(r.id); show(); } }, title), ' ',
           r.released ? h('span.pill.done', 'released') : h('span.pill', 'unreleased'),
           r.description ? h('div.muted.small', r.description) : null),
         h('div.small.muted',
@@ -562,24 +882,17 @@ async function pageReleases(key) {
               route();
             },
           }, 'Delete'))),
-      isOpen ? h('div', { style: 'padding: 0 0 8px 20px' }, items.length ? items.map((i) => issueRow(ctx, i, null, true)) : h('div.empty', 'No issues.')) : null,
-    ];
+      list);
   };
 
-  const list = h('div');
-  const draw = () => {
-    const unreleased = ctx.releases.filter((r) => !r.released);
-    const released = ctx.releases.filter((r) => r.released);
-    list.replaceChildren(
-      h('div.section', h('div.head', h('b', 'Unreleased')), unreleased.length ? unreleased.map(row) : h('div.empty', 'No unreleased releases.')),
-      released.length ? h('details.section', h('summary.head', h('b', `Released (${released.length})`)), released.map(row)) : '');
-  };
+  const unreleased = ctx.releases.filter((r) => !r.released);
+  const released = ctx.releases.filter((r) => r.released);
   $app.replaceChildren(...projectHeader(ctx, 'releases'),
     h('div.toolbar', h('button', { onclick: () => releaseDialog(ctx) }, '+ New release')),
-    list);
-  draw();
+    h('div.section', h('div.head', h('b', 'Unreleased')), unreleased.length ? unreleased.map(row) : h('div.empty', 'No unreleased releases.')),
+    released.length ? fold(st.folds, 'released', false, h('summary.head', h('b', `Released (${released.length})`)), released.map(row)) : '');
 }
-pageReleases.open = {};
+pageReleases.state = {};
 
 async function pageSettings(key) {
   const ctx = await loadProject(key);
@@ -634,17 +947,28 @@ async function pageSettings(key) {
       }, 'Delete project')));
 }
 
-async function pageIssue(key) {
+// issueView builds the issue, for its own page or the issue modal. host
+// says how: refresh() shows it again after a change, deleted(projectKey)
+// is called after deleting it, and modal is true in the modal, where links
+// to other issues open them in the modal too.
+async function issueView(key, host) {
   const issue = await api('GET', `/api/issues/${key}`);
   const pkey = key.replace(/-\d+$/, '');
-  const [ctx, comments, links, projects] = await Promise.all([
-    loadProject(pkey), api('GET', `/api/issues/${key}/comments`), api('GET', `/api/issues/${key}/links`), api('GET', '/api/projects')]);
-  topNav(projects);
+  const [ctx, comments, links] = await Promise.all([
+    loadProject(pkey), api('GET', `/api/issues/${key}/comments`), api('GET', `/api/issues/${key}/links`)]);
   const p = ctx.project;
   const save = async (patch) => {
     Object.assign(issue, await api('PATCH', `/api/issues/${key}`, patch));
-    route();
+    host.refresh();
   };
+  const issueLink = (k, text) => h('a', {
+    href: `#/i/${k}`,
+    onclick: (e) => {
+      if (!host.modal || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      openIssue(k);
+    },
+  }, text);
 
   // Description: rendered, click to edit.
   const descBox = h('div');
@@ -667,12 +991,12 @@ async function pageIssue(key) {
     const view = () => box.replaceChildren(
       h('div.when', fmtDateTime(c.created), c.updated !== c.created ? ' (edited)' : '', ' ',
         h('button.link.small', { onclick: edit }, 'Edit'),
-        h('button.link.small.danger', { onclick: async () => { if (confirm('Delete this comment?')) { await api('DELETE', `/api/comments/${c.id}`); route(); } } }, 'Delete')),
+        h('button.link.small.danger', { onclick: async () => { if (confirm('Delete this comment?')) { await api('DELETE', `/api/comments/${c.id}`); host.refresh(); } } }, 'Delete')),
       markdown(c.body));
     const edit = () => {
       const ta = h('textarea', { style: 'min-height:80px', value: c.body });
       box.replaceChildren(ta, h('div.form', { style: 'margin-top:6px' },
-        h('button.primary', { onclick: async () => { await api('PATCH', `/api/comments/${c.id}`, { body: ta.value }); route(); } }, 'Save'),
+        h('button.primary', { onclick: async () => { await api('PATCH', `/api/comments/${c.id}`, { body: ta.value }); host.refresh(); } }, 'Save'),
         h('button', { onclick: view }, 'Cancel')));
     };
     view();
@@ -692,10 +1016,10 @@ async function pageIssue(key) {
   const relOpts = [[0, '— none —'], ...ctx.releases.filter((r) => !r.released || r.id === issue.release).map((r) => [r.id, r.name])];
   const epicOpts = [['', '— none —'], ...ctx.epics.map((e) => [e.key, `${e.key} ${e.summary}`])];
 
-  $app.replaceChildren(
+  return h('div',
     h('div.muted.small', { style: 'margin-bottom:6px' },
       h('a', { href: `#/p/${p.key}/backlog` }, p.name), ' / ',
-      epic ? [h('a', { href: `#/i/${epic.key}` }, epic.key), ' / '] : null, issue.key),
+      epic ? [issueLink(epic.key, epic.key), ' / '] : null, issue.key),
     h('div.issue',
       h('div',
         h('input.summary', { type: 'text', value: issue.summary, onchange: (e) => save({ summary: e.target.value }) }),
@@ -703,15 +1027,15 @@ async function pageIssue(key) {
         issue.type === 'Epic' ? [
           h('h2', `Issues in this epic (${children.length})`),
           h('div.section', children.length ? children.map((i) => issueRow(ctx, i)) : h('div.empty', 'None yet.'),
-            h('div.quick', h('button.link', { onclick: () => createIssueDialog(ctx, { epic: issue.key, onCreated: () => route() }) }, '+ Create issue in epic'))),
+            h('div.quick', h('button.link', { onclick: () => createIssueDialog(ctx, { epic: issue.key, onCreated: () => host.refresh() }) }, '+ Create issue in epic'))),
         ] : null,
         h('h2', 'Links'),
         h('div.links',
           links.length ? links.map((l) => h('div.row',
             h('span.muted.small', { style: 'min-width:110px' }, l.label),
-            h('a', { href: `#/i/${l.key}` }, l.key), h('span.sum', l.summary),
+            issueLink(l.key, l.key), h('span.sum', l.summary),
             l.status ? h('span.pill' + (l.done ? '.done' : ''), l.status) : null,
-            h('button.link.danger', { title: 'Remove link', onclick: async () => { await api('DELETE', `/api/links/${l.id}`); route(); } }, '✕')))
+            h('button.link.danger', { title: 'Remove link', onclick: async () => { await api('DELETE', `/api/links/${l.id}`); host.refresh(); } }, '✕')))
             : h('div.muted.small', 'No links.'),
           h('form.form', {
             style: 'margin-top:8px',
@@ -719,7 +1043,7 @@ async function pageIssue(key) {
               e.preventDefault();
               const [type, inward] = linkForm.type.split(':');
               await api('POST', `/api/issues/${key}/links`, { type, issue: linkForm.issue, inward: inward === '1' });
-              route();
+              host.refresh();
             },
           },
           select(linkOpts, linkForm.type, (v) => { linkForm.type = v; }),
@@ -729,7 +1053,7 @@ async function pageIssue(key) {
         comments.map(commentEl),
         newComment,
         h('div.form', { style: 'margin-top:6px' },
-          h('button.primary', { onclick: async () => { if (!newComment.value.trim()) return; await api('POST', `/api/issues/${key}/comments`, { body: newComment.value }); route(); } }, 'Comment'))),
+          h('button.primary', { onclick: async () => { if (!newComment.value.trim()) return; await api('POST', `/api/issues/${key}/comments`, { body: newComment.value }); host.refresh(); } }, 'Comment'))),
       h('div.panel',
         h('div.fields',
           h('label', 'Key'), h('b', issue.key),
@@ -737,6 +1061,7 @@ async function pageIssue(key) {
           h('label', 'Type'), select(META.types.map((t) => [t, t]), issue.type, (v) => save({ type: v })),
           h('label', 'Priority'), select(META.priorities.map((x) => [x, x]), issue.priority, (v) => save({ priority: v })),
           h('label', 'Release'), select(relOpts, issue.release, (v) => save({ release: +v })),
+          issue.type !== 'Epic' ? [h('label', 'Board'), select([['1', 'On the board'], ['0', 'In the backlog']], issue.board ? '1' : '0', (v) => save({ board: v === '1' }))] : null,
           issue.type !== 'Epic' ? [h('label', 'Epic'), select(epicOpts, epic ? epic.key : '', (v) => save({ epic: v }))] : null,
           h('label.muted', 'Created'), h('span.small', fmtDateTime(issue.created)),
           h('label.muted', 'Updated'), h('span.small', fmtDateTime(issue.updated)),
@@ -746,9 +1071,91 @@ async function pageIssue(key) {
             onclick: async () => {
               if (!confirm(`Delete ${issue.key}? This also deletes its comments and links.`)) return;
               await api('DELETE', `/api/issues/${key}`);
-              location.hash = `#/p/${p.key}/backlog`;
+              host.deleted(p.key);
             },
           }, 'Delete issue')))));
+}
+
+async function pageIssue(key) {
+  const host = { modal: false, refresh: route, deleted: (pkey) => { location.hash = `#/p/${pkey}/backlog`; } };
+  const [view, projects] = await Promise.all([issueView(key, host), api('GET', '/api/projects')]);
+  topNav(projects);
+  $app.replaceChildren(view);
+}
+
+// ---------- issue modal ----------
+
+// Issues opened from the backlog, board, releases or the search show in a
+// modal over the page, so the page stays where it was. The modal shows one
+// issue at a time; opening another (a link in it, a search result) swaps it.
+const modal = { dlg: null, key: null, dirty: false };
+
+function openIssue(key) {
+  // On an issue's own page, issues open as pages.
+  if (!modal.dlg && /^#\/i\//.test(location.hash)) {
+    location.hash = `#/i/${key}`;
+    return;
+  }
+  closeMenu();
+  hideSearch();
+  if (!modal.dlg) {
+    const dlg = h('dialog.issue-modal', h('div.modal-inner', h('p.muted', 'Loading…')));
+    // Escape while typing only leaves the field, so an edit isn't lost.
+    // (On keydown: Chrome may not let a cancel event be prevented.)
+    dlg.addEventListener('keydown', (e) => {
+      const a = e.target;
+      if (e.key === 'Escape' && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT')) {
+        e.preventDefault();
+        a.blur();
+      }
+    });
+    // A click on the backdrop (outside the content) closes it.
+    let downOutside = false;
+    dlg.addEventListener('mousedown', (e) => { downOutside = e.target === dlg; });
+    dlg.addEventListener('click', (e) => { if (downOutside && e.target === dlg) dlg.close(); });
+    dlg.addEventListener('close', () => {
+      dlg.remove();
+      modal.dlg = null;
+      // Show changes made in the modal on the page below.
+      if (modal.dirty) { modal.dirty = false; route(); }
+    });
+    document.body.append(dlg);
+    dlg.showModal();
+    modal.dlg = dlg;
+  }
+  modal.key = key;
+  renderModal(true);
+}
+
+function closeIssueModal() {
+  modal.dirty = false;
+  if (modal.dlg) modal.dlg.close();
+}
+
+async function renderModal(top) {
+  const { dlg, key } = modal;
+  const host = {
+    modal: true,
+    refresh: () => { modal.dirty = true; renderModal(false); },
+    deleted: () => { modal.dirty = true; dlg.close(); },
+  };
+  let view;
+  try {
+    view = await issueView(key, host);
+  } catch (err) {
+    if (err.message === 'unauthorized') return;
+    view = h('p', 'Error: ' + err.message);
+  }
+  // Closed or swapped for another issue meanwhile.
+  if (modal.dlg !== dlg || modal.key !== key) return;
+  const scroll = top ? 0 : dlg.scrollTop;
+  dlg.replaceChildren(h('div.modal-inner',
+    h('div.modal-bar',
+      h('a', { href: `#/i/${key}`, title: 'Open on its own page' }, 'Open as page ↗'),
+      h('span.spacer'),
+      h('button.icon', { title: 'Close (Esc)', onclick: () => dlg.close() }, '✕')),
+    view));
+  dlg.scrollTop = scroll;
 }
 
 async function pageImport() {
@@ -786,6 +1193,8 @@ async function pageImport() {
 // ---------- router ----------
 
 async function route() {
+  closeIssueModal();
+  closeMenu();
   try {
     // Inside the try: a malformed escape in the hash throws a URIError.
     const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);

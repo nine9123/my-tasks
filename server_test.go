@@ -116,6 +116,12 @@ func TestIssueFlowOverHTTP(t *testing.T) {
 	if r, _ := call(t, ts, "POST", "/api/issues/APP-1/comments", `{"body":"hi"}`, key); r.StatusCode != 200 {
 		t.Fatalf("comment: %d", r.StatusCode)
 	}
+	_, b = call(t, ts, "GET", "/api/search?q=do+it", "", key)
+	var hits []SearchHit
+	json.Unmarshal([]byte(b), &hits)
+	if len(hits) != 1 || hits[0].Key != "APP-1" || hits[0].Project != "APP" {
+		t.Fatalf("search: %s", b)
+	}
 	if r, _ := call(t, ts, "GET", "/api/issues/APP-404", "", key); r.StatusCode != 404 {
 		t.Fatalf("missing: %d", r.StatusCode)
 	}

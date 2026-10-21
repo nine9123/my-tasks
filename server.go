@@ -64,6 +64,14 @@ func (s *Server) routes() {
 		return map[string]any{"types": IssueTypes, "priorities": Priorities, "linkTypes": LinkTypes}, nil
 	})
 
+	api("GET /api/search", func(r *http.Request) (any, error) {
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		if limit <= 0 || limit > 200 {
+			limit = 20
+		}
+		return s.store.Search(r.URL.Query().Get("q"), limit), nil
+	})
+
 	api("GET /api/projects", func(r *http.Request) (any, error) { return s.store.Projects(), nil })
 	api("POST /api/projects", func(r *http.Request) (any, error) {
 		var in struct{ Key, Name, Description string }

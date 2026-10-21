@@ -20,7 +20,7 @@ a:hover { text-decoration: underline; }
 h1 { font-size: 22px; margin: 0 0 12px; }
 h2 { font-size: 16px; margin: 20px 0 8px; }
 input, select, textarea, button { font: inherit; color: inherit; }
-input[type=text], input[type=date], input[type=password], input:not([type]), select, textarea {
+input[type=text], input[type=search], input[type=date], input[type=password], input:not([type]), select, textarea {
   background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px;
 }
 textarea { width: 100%; min-height: 160px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
@@ -29,6 +29,18 @@ button:hover { border-color: var(--muted); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.danger { color: var(--danger); }
 button.link { background: none; border: none; color: var(--accent); padding: 0 4px; }
+button.icon { background: none; border: 1px solid transparent; padding: 0 3px; line-height: 18px; color: var(--muted); display: inline-flex; align-items: center; flex: none; }
+button.icon:hover { background: var(--hover); border-color: var(--line); color: var(--text); }
+/* Edit and menu buttons on rows and cards show on hover, like Jira's. */
+.row button.icon.hover, .card button.icon.hover { visibility: hidden; }
+.row:hover button.icon.hover, .card:hover button.icon.hover, button.icon.hover:focus-visible { visibility: visible; }
+input.inline { flex: 1; min-width: 0; width: 100%; padding: 1px 6px; }
+
+.menu { position: fixed; z-index: 30; min-width: 160px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 20px rgba(9, 30, 66, .25); padding: 4px 0; }
+.menu button { display: flex; gap: 8px; align-items: center; width: 100%; text-align: left; background: none; border: none; border-radius: 0; padding: 5px 12px; }
+.menu button:hover { background: var(--hover); }
+.menu button.on { font-weight: 600; color: var(--accent); }
+.menu .sep { border-top: 1px solid var(--line); margin: 4px 0; }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 
@@ -36,6 +48,13 @@ button.link { background: none; border: none; color: var(--accent); padding: 0 4
 #top .logo { font-weight: 700; font-size: 16px; color: var(--text); }
 #topnav { display: flex; gap: 16px; flex: 1; align-items: center; }
 #topnav .spacer { flex: 1; }
+.searchbox { position: relative; }
+.searchbox input.search { width: 260px; }
+.search-results { position: absolute; top: calc(100% + 4px); right: 0; width: min(520px, 90vw); max-height: 70vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 20px rgba(9, 30, 66, .2); z-index: 10; }
+.search-results .hit { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; }
+.search-results .hit.on, .search-results .hit:hover { background: var(--hover); }
+.search-results .key { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.search-results .sum { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #app { padding: 20px; max-width: 1500px; margin: 0 auto; }
 #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--danger); color: #fff; padding: 8px 16px; border-radius: 4px; z-index: 20; }
 
@@ -93,10 +112,16 @@ button.link { background: none; border: none; color: var(--accent); padding: 0 4
 .card:hover { border-color: var(--muted); }
 .card .meta { display: flex; gap: 6px; align-items: center; margin-top: 6px; font-size: 12px; color: var(--muted); }
 .card .meta .key { margin-left: auto; }
+.card .ctop { display: flex; gap: 2px; align-items: flex-start; }
+.card .csum { flex: 1; overflow-wrap: anywhere; }
+.clist { min-height: 40px; }
+.drop-line { height: 2px; margin: -4px 0 2px; background: var(--accent); border-radius: 1px; }
 
 /* releases */
-.release { display: grid; grid-template-columns: 1fr 160px 200px auto; gap: 12px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); }
-.release:last-child { border-bottom: none; }
+.release { display: grid; grid-template-columns: 1fr 160px 200px auto; gap: 12px; align-items: center; padding: 10px 12px; }
+.relitem { border-bottom: 1px solid var(--line); }
+.relitem:last-child { border-bottom: none; }
+.rel-issues { padding: 0 0 8px 20px; }
 .progress { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--todo); }
 .progress .d { background: #22a06b; } .progress .p { background: var(--accent); }
 
@@ -123,6 +148,12 @@ button.link { background: none; border: none; color: var(--accent); padding: 0 4
 dialog { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); width: min(640px, 95vw); padding: 18px; }
 dialog::backdrop { background: rgba(9, 30, 66, .45); }
 dialog .fields { grid-template-columns: 100px 1fr; }
+dialog.issue-modal { width: min(1100px, 95vw); max-height: 92vh; overflow: auto; padding: 0; }
+/* The padding is on the inner box: a click on the dialog itself is outside. */
+.issue-modal .modal-inner { padding: 0 20px 20px; }
+.issue-modal .modal-bar { display: flex; align-items: center; gap: 8px; position: sticky; top: 0; z-index: 2; background: var(--panel); padding: 10px 0 8px; margin-bottom: 4px; }
+.issue-modal .modal-bar .spacer { flex: 1; }
+.issue-modal .modal-bar button.icon { font-size: 16px; padding: 2px 6px; }
 dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
 .login { max-width: 360px; margin: 80px auto; }

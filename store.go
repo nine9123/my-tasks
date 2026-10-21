@@ -70,6 +70,7 @@ type Issue struct {
 	ReleaseID   int        `json:"release"` // 0: none
 	EpicID      int        `json:"epic"`    // 0: none
 	Rank        float64    `json:"rank"`
+	Board       bool       `json:"board"`          // on the board; false: in the backlog
 	Jira        bool       `json:"jira,omitempty"` // created or updated by an import
 	JiraRank    string     `json:"jiraRank,omitempty"`
 	JiraParent  string     `json:"jiraParent,omitempty"` // epic key not imported yet
@@ -114,7 +115,12 @@ var LinkTypes = []LinkType{
 	{"Duplicate", "duplicates", "is duplicated by"},
 }
 
+// dataSchema is the version of the data file layout written by this build.
+// Version 1 added Issue.Board.
+const dataSchema = 1
+
 type Data struct {
+	Schema   int              `json:"schema"`
 	NextID   int              `json:"nextId"`
 	Projects map[int]*Project `json:"projects"`
 	Releases map[int]*Release `json:"releases"`
@@ -156,6 +162,7 @@ func OpenStore(path string) (*Store, error) {
 
 func emptyData() *Data {
 	return &Data{
+		Schema:   dataSchema,
 		NextID:   1,
 		Projects: map[int]*Project{},
 		Releases: map[int]*Release{},
@@ -173,16 +180,32 @@ func (s *Store) load() error {
 	case err != nil:
 		return err
 	default:
+		d.Schema = 0 // a file without the field predates it
 		if err := json.Unmarshal(b, d); err != nil {
 			return fmt.Errorf("%s: %w", s.path, err)
 		}
 	}
+	migrate(d)
 	s.d = d
 	s.byKey = map[string]*Issue{}
 	for _, i := range d.Issues {
 		s.byKey[i.Key] = i
 	}
 	return nil
+}
+
+// migrate brings data written by an older build up to dataSchema.
+func migrate(d *Data) {
+	if d.Schema < 1 {
+		// Before the board flag every issue was on the board. Keep the
+		// ones that are being worked on or done there; the ones not
+		// started yet go to the backlog.
+		for _, i := range d.Issues {
+			p := d.Projects[i.ProjectID]
+			i.Board = p != nil && !inTodo(p, i.StatusID)
+		}
+	}
+	d.Schema = dataSchema
 }
 
 // save writes the state atomically. If that fails the in-memory state is
@@ -424,6 +447,12 @@ func findStatus(p *Project, id int) *Status {
 	return nil
 }
 
+// inTodo reports whether a status is in the to do category (or unknown).
+func inTodo(p *Project, statusID int) bool {
+	st := findStatus(p, statusID)
+	return st == nil || st.Category == CatTodo
+}
+
 func (s *Store) syncResolved(p *Project, i *Issue) {
 	st := findStatus(p, i.StatusID)
 	done := st != nil && st.Category == CatDone
@@ -643,6 +672,75 @@ func (s *Store) Issues(projectKey string, f IssueFilter) ([]Issue, error) {
 	return out, nil
 }
 
+// SearchHit is an issue found by Search, with what a result list shows.
+type SearchHit struct {
+	Key      string `json:"key"`
+	Project  string `json:"project"`
+	Type     string `json:"type"`
+	Summary  string `json:"summary"`
+	Priority string `json:"priority"`
+	Status   string `json:"status"`
+	Done     bool   `json:"done"`
+}
+
+// Search finds issues in all projects by key, summary or description, best
+// matches first: the issue with that exact key, then keys starting with the
+// text, then matches in the summary, then in the description. Within each,
+// the most recently updated come first.
+func (s *Store) Search(text string, limit int) []SearchHit {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	q := strings.ToLower(strings.TrimSpace(text))
+	if q == "" {
+		return []SearchHit{}
+	}
+	type scored struct {
+		i     *Issue
+		score int
+	}
+	var found []scored
+	for _, i := range s.d.Issues {
+		key := strings.ToLower(i.Key)
+		score := 0
+		switch {
+		case key == q:
+			score = 4
+		case strings.HasPrefix(key, q):
+			score = 3
+		case strings.Contains(strings.ToLower(i.Summary), q):
+			score = 2
+		case strings.Contains(strings.ToLower(i.Description), q):
+			score = 1
+		}
+		if score > 0 {
+			found = append(found, scored{i, score})
+		}
+	}
+	sort.Slice(found, func(a, b int) bool {
+		x, y := found[a], found[b]
+		if x.score != y.score {
+			return x.score > y.score
+		}
+		if !x.i.Updated.Equal(y.i.Updated) {
+			return x.i.Updated.After(y.i.Updated)
+		}
+		return x.i.ID > y.i.ID
+	})
+	if len(found) > limit {
+		found = found[:limit]
+	}
+	out := make([]SearchHit, 0, len(found))
+	for _, f := range found {
+		p := s.d.Projects[f.i.ProjectID]
+		h := SearchHit{Key: f.i.Key, Project: p.Key, Type: f.i.Type, Summary: f.i.Summary, Priority: f.i.Priority}
+		if st := findStatus(p, f.i.StatusID); st != nil {
+			h.Status, h.Done = st.Name, st.Category == CatDone
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
 func sortByRank(is []Issue) {
 	sort.Slice(is, func(a, b int) bool {
 		if is[a].Rank != is[b].Rank {
@@ -670,6 +768,7 @@ type IssueInput struct {
 	Priority    *string `json:"priority"`
 	Release     *int    `json:"release"` // 0 clears
 	Epic        *string `json:"epic"`    // issue key, "" clears
+	Board       *bool   `json:"board"`   // false: send to the backlog
 }
 
 func contains(list []string, v string) bool {
@@ -712,6 +811,10 @@ func (s *Store) applyIssue(p *Project, i *Issue, in IssueInput) error {
 		if findStatus(p, *in.Status) == nil {
 			return invalid("unknown status %d", *in.Status)
 		}
+		// Starting work on an issue takes it out of the backlog.
+		if *in.Status != i.StatusID && !inTodo(p, *in.Status) {
+			i.Board = true
+		}
 		i.StatusID = *in.Status
 	}
 	if in.Priority != nil {
@@ -743,6 +846,9 @@ func (s *Store) applyIssue(p *Project, i *Issue, in IssueInput) error {
 			}
 			i.EpicID = e.ID
 		}
+	}
+	if in.Board != nil {
+		i.Board = *in.Board
 	}
 	return nil
 }
