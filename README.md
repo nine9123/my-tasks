@@ -25,7 +25,9 @@ auth. No users, no permissions, no automations.
   unreleased work by default; pick a single release or everything instead.
   As on Jira's boards, the unreleased work shows done issues only for 14
   days after they were resolved. The epic filter has *No epic*, which is
-  what Jira's *No Epic* swimlane shows when grouped by epic.
+  what Jira's *No Epic* swimlane shows when grouped by epic. When the
+  columns don't fit, a small map of them sits in the bottom-right corner, as
+  on Jira: drag its frame to scroll the board sideways.
 - **Quick edits** on backlog rows and board cards, as in Jira: click the
   type or priority icon to change it, the pencil to rename in place, and
   the `⋯` menu to send an issue to the board / backlog or move it to the
