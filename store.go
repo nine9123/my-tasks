@@ -70,12 +70,17 @@ type Issue struct {
 	ReleaseID   int        `json:"release"` // 0: none
 	EpicID      int        `json:"epic"`    // 0: none
 	Rank        float64    `json:"rank"`
+	Jira        bool       `json:"jira,omitempty"` // created or updated by an import
 	JiraRank    string     `json:"jiraRank,omitempty"`
 	JiraParent  string     `json:"jiraParent,omitempty"` // epic key not imported yet
 	Created     time.Time  `json:"created"`
 	Updated     time.Time  `json:"updated"`
 	Resolved    *time.Time `json:"resolved"`
 }
+
+// fromJira reports whether an import may overwrite the issue. Data from
+// before the Jira flag existed has a Jira rank on every imported issue.
+func (i *Issue) fromJira() bool { return i.Jira || i.JiraRank != "" }
 
 type Comment struct {
 	ID         int       `json:"id"`
@@ -213,7 +218,16 @@ func writeFileAtomic(path string, b []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	// Make the rename itself durable. Best effort: some filesystems can't
+	// sync a directory, and the new file is in place either way.
+	if dir, err := os.Open(filepath.Dir(path)); err == nil {
+		dir.Sync()
+		dir.Close()
+	}
+	return nil
 }
 
 func (s *Store) newID() int {

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Jira's "Export XML" (the RSS search view). Only the fields this tracker
@@ -106,7 +107,7 @@ func parseJiraTime(s string) (time.Time, bool) {
 func normName(s string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(s) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			b.WriteRune(r)
 		}
 	}
@@ -179,7 +180,9 @@ func (s *Store) ImportJira(files [][]jiraItem) (ImportResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	touched := map[int]bool{} // project ids
+	touched := map[int]bool{}        // project ids
+	badProjects := map[string]bool{} // keys that can't be created here
+	imported := map[string]*Issue{}  // what the second pass may touch
 	for _, key := range keys {
 		it := items[key]
 		m := issueKeyRe.FindStringSubmatch(it.Key)
@@ -189,6 +192,9 @@ func (s *Store) ImportJira(files [][]jiraItem) (ImportResult, error) {
 		}
 		num, _ := strconv.Atoi(m[2])
 
+		if badProjects[it.Project.Key] {
+			continue
+		}
 		p := s.projectByKey(it.Project.Key)
 		if p == nil {
 			name := strings.TrimSpace(it.Project.Name)
@@ -197,17 +203,25 @@ func (s *Store) ImportJira(files [][]jiraItem) (ImportResult, error) {
 			}
 			var err error
 			if p, err = s.createProject(it.Project.Key, name, ""); err != nil {
-				s.load()
-				return res, fmt.Errorf("project %s: %w", it.Project.Key, err)
+				// One unusable project (e.g. a key longer than allowed here)
+				// shouldn't sink the others in the same files.
+				badProjects[it.Project.Key] = true
+				res.warn("project %s: %v; its issues skipped", it.Project.Key, err)
+				continue
 			}
 			res.ProjectsCreated = append(res.ProjectsCreated, p.Key)
+		}
+
+		i := s.byKey[it.Key]
+		if i != nil && !i.fromJira() {
+			// Created here with a number Jira also used: don't overwrite it.
+			res.warn("%s: an issue created here already has this key, skipped", it.Key)
+			continue
 		}
 		touched[p.ID] = true
 		if num >= p.NextNumber {
 			p.NextNumber = num + 1
 		}
-
-		i := s.byKey[it.Key]
 		if i == nil {
 			i = &Issue{ID: s.newID(), ProjectID: p.ID, Number: num, Key: it.Key}
 			s.d.Issues[i.ID] = i
@@ -216,6 +230,8 @@ func (s *Store) ImportJira(files [][]jiraItem) (ImportResult, error) {
 		} else {
 			res.IssuesUpdated++
 		}
+		i.Jira = true
+		imported[it.Key] = i
 
 		i.Summary = strings.TrimSpace(it.Summary)
 		if i.Summary == "" {
@@ -286,7 +302,7 @@ func (s *Store) ImportJira(files [][]jiraItem) (ImportResult, error) {
 	// Second pass: everything that points at other issues.
 	for _, key := range keys {
 		it := items[key]
-		i := s.byKey[it.Key]
+		i := imported[it.Key]
 		if i == nil {
 			continue
 		}
@@ -406,7 +422,7 @@ func (s *Store) importStatus(p *Project, it *jiraItem, res *ImportResult) int {
 		return p.Statuses[0].ID
 	}
 	for _, st := range p.Statuses {
-		if normName(st.Name) == normName(name) {
+		if n := normName(name); n == normName(st.Name) && (n != "" || strings.EqualFold(st.Name, name)) {
 			return st.ID
 		}
 	}
@@ -422,7 +438,12 @@ func (s *Store) importStatus(p *Project, it *jiraItem, res *ImportResult) int {
 			}
 		}
 	}
-	p.Statuses = append(p.Statuses[:pos], append([]Status{st}, p.Statuses[pos:]...)...)
+	// A new slice: copies of the project handed out by Project() and
+	// Projects() share the old backing array and may still be encoding it.
+	statuses := make([]Status, 0, len(p.Statuses)+1)
+	statuses = append(statuses, p.Statuses[:pos]...)
+	statuses = append(statuses, st)
+	p.Statuses = append(statuses, p.Statuses[pos:]...)
 	res.StatusesAdded = append(res.StatusesAdded, p.Key+" "+name)
 	return st.ID
 }

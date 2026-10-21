@@ -189,6 +189,47 @@ func TestImportJira(t *testing.T) {
 	}
 }
 
+func jiraItemXML(key, project, status, category string) string {
+	return `<item><key>` + key + `</key><project key="` + project + `">` + project + `</project>
+  <summary>from Jira</summary><type>Task</type><priority>Medium</priority>
+  <status>` + status + `</status><statusCategory key="` + category + `"/>
+  <created>Mon, 5 Oct 2026 10:00:00 +0200</created><updated>Mon, 5 Oct 2026 10:00:00 +0200</updated></item>`
+}
+
+func TestImportJiraKeepsLocalIssuesAndOtherProjects(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.CreateProject("RU", "Russian", ""); err != nil {
+		t.Fatal(err)
+	}
+	local := mustIssue(t, s, "RU", "made here")
+	export := `<rss version="0.92"><channel>` +
+		jiraItemXML("RU-1", "RU", "Готово", "done") +
+		jiraItemXML("RU-2", "RU", "В работе", "indeterminate") +
+		jiraItemXML("TOOLONGPROJECT-1", "TOOLONGPROJECT", "To Do", "new") +
+		`</channel></rss>`
+	res, err := s.ImportJira([][]jiraItem{parse(t, export)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IssuesCreated != 1 || res.IssuesUpdated != 0 || len(res.Warnings) != 2 {
+		t.Fatalf("result: %+v", res)
+	}
+	if i, _ := s.Issue(local.Key); i.Summary != "made here" {
+		t.Fatalf("local issue overwritten: %+v", i)
+	}
+	// Names without ASCII letters are still told apart.
+	p, _ := s.Project("RU")
+	i, _ := s.Issue("RU-2")
+	if statusName(&p, i.StatusID) != "В работе" || i.Resolved != nil {
+		t.Fatalf("status of RU-2: %q, workflow %+v", statusName(&p, i.StatusID), p.Statuses)
+	}
+	// The imported issue is updated by the next import.
+	res, _ = s.ImportJira([][]jiraItem{parse(t, export)})
+	if res.IssuesUpdated != 1 {
+		t.Fatalf("re-import: %+v", res)
+	}
+}
+
 func TestParseJiraXMLRejectsOtherXML(t *testing.T) {
 	if _, err := ParseJiraXML(strings.NewReader("not xml at all")); err == nil {
 		t.Fatal("expected an error")

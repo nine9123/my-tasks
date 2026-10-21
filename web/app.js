@@ -47,7 +47,11 @@ async function api(method, path, body) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
-  const r = await fetch(path, opts);
+  let r = await fetch(path, opts);
+  // Behind idlegate (see README), a request that finds the server stopped
+  // outside the gate gets a 502 and the next one starts it again. Reads are
+  // safe to repeat, so retry those once instead of showing the error.
+  if (r.status === 502 && method === 'GET') r = await fetch(path, opts);
   if (r.status === 401 && path !== '/api/login') {
     showLogin();
     throw new Error('unauthorized');
@@ -101,15 +105,27 @@ function esc(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function inline(s) {
-  const codes = [];
-  s = esc(s).replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return '\u0000' + (codes.length - 1) + '\u0000'; });
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, url) =>
-    /^(https?:|mailto:|\/|#)/i.test(url) ? `<a href="${url}" target="_blank" rel="noopener">${text}</a>` : m);
-  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+function emphasis(s) {
   s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
-  s = s.replace(/(^|[\s(])_([^_]+)_(?=[\s).,!?:;]|$)/g, '$1<em>$2</em>');
-  return s.replace(/\u0000(\d+)\u0000/g, (_, n) => `<code>${codes[n]}</code>`);
+  return s.replace(/(^|[\s(])_([^_]+)_(?=[\s).,!?:;]|$)/g, '$1<em>$2</em>');
+}
+
+// Code spans and links are swapped for placeholders as soon as they are
+// built, so the later patterns never run over generated HTML: an autolink
+// matched inside a link's href would otherwise close the attribute.
+function inline(s) {
+  const held = [];
+  const hold = (html) => { held.push(html); return '\u0000' + (held.length - 1) + '\u0000'; };
+  s = esc(s.replace(/\u0000/g, ''));
+  s = s.replace(/`([^`]+)`/g, (_, c) => hold(`<code>${c}</code>`));
+  s = s.replace(/\[([^\]]+)\]\(([^)\s\u0000]+)\)/g, (m, text, url) =>
+    /^(https?:|mailto:|\/|#)/i.test(url) ? hold(`<a href="${url}" target="_blank" rel="noopener">${emphasis(text)}</a>`) : m);
+  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)\u0000]+)/g, (_, pre, url) =>
+    pre + hold(`<a href="${url}" target="_blank" rel="noopener">${url}</a>`));
+  s = emphasis(s);
+  // A link's text can hold a code span, so restore until none are left.
+  while (s.includes('\u0000')) s = s.replace(/\u0000(\d+)\u0000/g, (_, n) => held[n]);
+  return s;
 }
 
 function markdown(src) {
@@ -391,7 +407,10 @@ async function pageBacklog(key) {
     const issue = ctx.issues.find((i) => i.key === k);
     dragKey = null;
     if (!issue) return;
-    if (issue.release !== relId) Object.assign(issue, await api('PATCH', `/api/issues/${k}`, { release: relId }));
+    // Open issues of a released (hidden) release are drawn under Backlog:
+    // reordering them there must not clear their release.
+    const drawnIn = ctx.releases.some((r) => r.id === issue.release && (st.showDone || !r.released)) ? issue.release : 0;
+    if (drawnIn !== relId) Object.assign(issue, await api('PATCH', `/api/issues/${k}`, { release: relId }));
     if (rank) {
       const r = await api('POST', `/api/issues/${k}/rank`, rank);
       issue.rank = r.rank;
@@ -767,8 +786,9 @@ async function pageImport() {
 // ---------- router ----------
 
 async function route() {
-  const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
   try {
+    // Inside the try: a malformed escape in the hash throws a URIError.
+    const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
     if (!META) META = await api('GET', '/api/meta');
     if (parts[0] === 'p' && parts[1]) {
       const page = { backlog: pageBacklog, board: pageBoard, releases: pageReleases, settings: pageSettings }[parts[2] || 'backlog'];

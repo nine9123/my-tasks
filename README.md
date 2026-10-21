@@ -74,6 +74,40 @@ services:
 
 Check with `curl http://<nas>:8099/healthz` → `ok`.
 
+### Behind idlegate (stop it while unused)
+
+[idlegate](https://github.com/nine9123/idlegate) stops the container after
+a while without requests and starts it again on the next one, so the
+tracker uses no memory while nobody has it open. my-tasks needs nothing
+special for that: it is ready as soon as it listens, keeps everything in
+`tasks.json`, and the login cookie is derived from the API key, so you stay
+signed in across a sleep. The UI doesn't poll, so an open tab doesn't keep
+it awake either.
+
+[`docker-compose.idlegate.yml`](docker-compose.idlegate.yml) is the
+compose file above with idlegate in front:
+
+```sh
+docker compose -f docker-compose.idlegate.yml up -d --build
+```
+
+If a host already runs an idlegate, add the route to it instead, with
+`my-tasks` on a network it can reach and no published port of its own:
+
+```
+:8099 http://my-tasks:8099 my-tasks idle=30m health=/healthz
+```
+
+Worth knowing:
+
+- The first page load after a sleep waits for the container to start.
+- `/healthz` through the gate's port counts as use: an uptime monitor
+  polling it keeps the tracker awake. The image's own `HEALTHCHECK` runs
+  inside the container and doesn't go through the gate.
+- The command line import (below) needs the server stopped, and a request
+  arriving through the gate during the import would start it again. Stop the
+  gate, or use *Import from Jira* in the UI, which is safe at any time.
+
 ## Migrating from Jira
 
 1. In Jira, go to *Filters → Advanced issue search*, search
@@ -102,7 +136,11 @@ Details worth knowing:
   of the attached export have all issues done and are likely to be released).
 - **Re-importing is safe**: issues are matched by key and updated, comments
   by their Jira id, links are not duplicated. Imported fields are
-  overwritten, including the backlog order of imported issues.
+  overwritten, including the backlog order of imported issues. An issue
+  created here is never overwritten: if Jira has an issue with the same key,
+  that one is skipped with a warning.
+- A project whose key can't be used here (longer than 10 characters, say)
+  is skipped with a warning; the other projects in the files are imported.
 - Epics and links that point into a file you didn't select are reported as
   warnings. An epic link is remembered and filled in when the epic is
   imported later; a link is filled in when the file with the other issue is
