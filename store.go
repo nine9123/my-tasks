@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -144,12 +145,21 @@ func conflict(format string, a ...any) error { return &Error{409, fmt.Sprintf(fo
 // Store keeps everything in memory and writes the whole state to one JSON
 // file after every change. For one user and a few thousand issues that is a
 // few milliseconds per write and needs no database.
+//
+// With a save delay (SetSaveDelay) the write is put off instead: the first
+// change starts a timer, and when it fires everything changed since is
+// written at once, so a session of small edits wakes a sleeping disk once
+// rather than per edit. Flush writes what is pending right away.
 type Store struct {
 	mu    sync.RWMutex
 	path  string
 	d     *Data
 	byKey map[string]*Issue
 	now   func() time.Time
+
+	delay time.Duration // 0: write on every change
+	dirty bool          // changes not written yet
+	timer *time.Timer   // pending delayed write
 }
 
 func OpenStore(path string) (*Store, error) {
@@ -208,9 +218,26 @@ func migrate(d *Data) {
 	d.Schema = dataSchema
 }
 
-// save writes the state atomically. If that fails the in-memory state is
-// rolled back to what is on disk, so a failed request leaves no trace.
+// SetSaveDelay sets how long a change may stay in memory before it is
+// written; 0 writes every change immediately. Call Flush before exiting.
+func (s *Store) SetSaveDelay(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.delay = d
+}
+
+// save records a change; s.mu must be held for writing. Without a save delay
+// it writes the state atomically, and if that fails the in-memory state is
+// rolled back to what is on disk, so a failed request leaves no trace. With
+// one it only schedules the write.
 func (s *Store) save() error {
+	if s.delay > 0 {
+		s.dirty = true
+		if s.timer == nil {
+			s.timer = time.AfterFunc(s.delay, s.delayedWrite)
+		}
+		return nil
+	}
 	b, err := json.Marshal(s.d)
 	if err == nil {
 		err = writeFileAtomic(s.path, b)
@@ -219,6 +246,49 @@ func (s *Store) save() error {
 		if lerr := s.load(); lerr != nil {
 			return fmt.Errorf("save: %v; reload: %v", err, lerr)
 		}
+		return fmt.Errorf("save: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) delayedWrite() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.timer = nil
+	if err := s.writePending(); err != nil {
+		// The changes are still in memory (and were already confirmed to
+		// the client), so keep them and try again later.
+		log.Printf("save: %v; retrying in %s", err, s.delay)
+		s.timer = time.AfterFunc(s.delay, s.delayedWrite)
+	}
+}
+
+// writePending writes the state if it has unwritten changes; s.mu must be
+// held for writing.
+func (s *Store) writePending() error {
+	if !s.dirty {
+		return nil
+	}
+	b, err := json.Marshal(s.d)
+	if err == nil {
+		err = writeFileAtomic(s.path, b)
+	}
+	if err != nil {
+		return err
+	}
+	s.dirty = false
+	return nil
+}
+
+// Flush writes pending changes now and cancels the delayed write.
+func (s *Store) Flush() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.timer != nil {
+		s.timer.Stop()
+		s.timer = nil
+	}
+	if err := s.writePending(); err != nil {
 		return fmt.Errorf("save: %w", err)
 	}
 	return nil

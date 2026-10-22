@@ -23,6 +23,8 @@ environment:
   API_KEY    required for the server; sent as X-Api-Key or "Authorization: Bearer"
   DATA_DIR   where tasks.json is kept (default ./data)
   PORT       listen port (default 8099)
+  SAVE_DELAY how long changes may stay in memory before tasks.json is
+             written, e.g. 30s or 10m (default 5m; 0 writes every change)
 `
 
 func main() {
@@ -47,10 +49,15 @@ func main() {
 	if apiKey == "" {
 		log.Fatal("API_KEY is not set")
 	}
+	saveDelay, err := time.ParseDuration(env("SAVE_DELAY", "5m"))
+	if err != nil || saveDelay < 0 {
+		log.Fatalf("SAVE_DELAY: %q is not a duration like 30s or 5m", os.Getenv("SAVE_DELAY"))
+	}
 	store, err := openData(dataDir)
 	if err != nil {
 		log.Fatal(err)
 	}
+	store.SetSaveDelay(saveDelay)
 	srv := &http.Server{Addr: ":" + port, Handler: logRequests(NewServer(store, apiKey)),
 		ReadHeaderTimeout: 10 * time.Second}
 
@@ -69,11 +76,15 @@ func main() {
 			log.Printf("shutdown: %v", err)
 		}
 	}()
-	log.Printf("listening on :%s, data in %s", port, dataDir)
+	log.Printf("listening on :%s, data in %s, saved %s after a change", port, dataDir, saveDelay)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
 	<-shutdown
+	// Write what the save delay held back.
+	if err := store.Flush(); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func env(name, def string) string {
