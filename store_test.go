@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func newTestStore(t *testing.T) *Store {
@@ -64,6 +65,55 @@ func TestCreateIssueDefaultsAndPersistence(t *testing.T) {
 	c := mustIssue(t, s2, "APP", "third")
 	if c.Key != "APP-3" {
 		t.Fatalf("numbering after reload: %s", c.Key)
+	}
+}
+
+func TestSaveDelay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tasks.json")
+	s, _ := OpenStore(path)
+	s.SetSaveDelay(time.Hour)
+	if _, err := s.CreateProject("app", "My App", ""); err != nil {
+		t.Fatal(err)
+	}
+	mustIssue(t, s, "APP", "first")
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("written before the delay: %v", err)
+	}
+	if err := s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	s2, _ := OpenStore(path)
+	if got, err := s2.Issue("APP-1"); err != nil || got.Summary != "first" {
+		t.Fatalf("after flush: %+v %v", got, err)
+	}
+
+	// Nothing pending: Flush doesn't touch the file.
+	before, _ := os.Stat(path)
+	time.Sleep(10 * time.Millisecond)
+	if err := s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := os.Stat(path); !after.ModTime().Equal(before.ModTime()) {
+		t.Fatal("clean store rewrote the file")
+	}
+
+	// The timer writes everything changed since the first change at once.
+	s.SetSaveDelay(20 * time.Millisecond)
+	mustIssue(t, s, "APP", "second")
+	mustIssue(t, s, "APP", "third")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		s3, err := OpenStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s3.Issue("APP-3"); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("delayed write never happened")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

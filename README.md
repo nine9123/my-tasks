@@ -59,14 +59,23 @@ docker compose up -d --build
 Open `http://<nas>:8099` and sign in with the API key.
 
 Everything lives in `/data/tasks.json` (mounted from `./data`). It is
-rewritten atomically after every change, so copying it is a backup;
-include the folder in your snapshots.
+rewritten atomically, so copying it is a backup; include the folder in
+your snapshots.
+
+Changes are not written one by one: the first change starts a
+`SAVE_DELAY` timer (5 minutes by default), and when it runs out everything
+changed in the meantime is written in one go. So a session of small edits
+wakes a sleeping HDD once, not on every drag and rename. Stopping the
+container (`docker stop`, idlegate) writes pending changes first. A crash
+or power cut loses at most the last `SAVE_DELAY` of changes; set
+`SAVE_DELAY=0` to write every change immediately, as before.
 
 | Variable   | Default | |
 |------------|---------|-|
 | `API_KEY`  | –       | required |
 | `DATA_DIR` | `/data` in the image, `./data` otherwise | |
 | `PORT`     | `8099`  | |
+| `SAVE_DELAY` | `5m` | how long changes may wait in memory before they are written (`30s`, `10m`, …; `0`: write every change) |
 
 ### TrueNAS / image from the registry
 
