@@ -49,6 +49,9 @@ func main() {
 	if apiKey == "" {
 		log.Fatal("API_KEY is not set")
 	}
+	if len(apiKey) < 16 {
+		log.Print("warning: API_KEY is short and easy to guess; use something like `openssl rand -hex 24`")
+	}
 	saveDelay, err := time.ParseDuration(env("SAVE_DELAY", "5m"))
 	if err != nil || saveDelay < 0 {
 		log.Fatalf("SAVE_DELAY: %q is not a duration like 30s or 5m", os.Getenv("SAVE_DELAY"))

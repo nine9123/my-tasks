@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -10,9 +11,13 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 //go:embed web
@@ -20,22 +25,30 @@ var webFS embed.FS
 
 const sessionCookie = "mt_session"
 
+// sessionTTL is how long a sign-in lasts without use; using the tracker
+// renews it (see auth).
+const sessionTTL = 30 * 24 * time.Hour
+
 type Server struct {
-	store        *Store
-	apiKey       string
-	sessionToken string
-	mux          *http.ServeMux
+	store   *Store
+	apiKey  string
+	keyHash [sha256.Size]byte
+	limiter *failLimiter
+	now     func() time.Time
+	mux     *http.ServeMux
 }
 
 func NewServer(store *Store, apiKey string) *Server {
-	mac := hmac.New(sha256.New, []byte(apiKey))
-	mac.Write([]byte("my-tasks-session"))
-	s := &Server{store: store, apiKey: apiKey, sessionToken: hex.EncodeToString(mac.Sum(nil)), mux: http.NewServeMux()}
+	s := &Server{store: store, apiKey: apiKey, keyHash: sha256.Sum256([]byte(apiKey)), now: time.Now, mux: http.NewServeMux()}
+	s.limiter = newFailLimiter(10, 6*time.Second, func() time.Time { return s.now() })
 	s.routes()
 	return s
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	securityHeaders(w, r)
+	s.mux.ServeHTTP(w, r)
+}
 
 func (s *Server) routes() {
 	m := s.mux
@@ -253,30 +266,131 @@ func (s *Server) importJira(r *http.Request) (any, error) {
 	return s.store.ImportJira(files)
 }
 
-func (s *Server) authorized(r *http.Request) bool {
-	key := r.Header.Get("X-Api-Key")
-	if key == "" {
-		if a := r.Header.Get("Authorization"); strings.HasPrefix(a, "Bearer ") {
-			key = strings.TrimPrefix(a, "Bearer ")
+// keyMatches compares in constant time. Hashing both sides first keeps the
+// comparison from returning early on a length mismatch, which would tell an
+// attacker how long the key is.
+func (s *Server) keyMatches(key string) bool {
+	h := sha256.Sum256([]byte(key))
+	return subtle.ConstantTimeCompare(h[:], s.keyHash[:]) == 1
+}
+
+// requestKey is the API key a request presents, if any.
+func requestKey(r *http.Request) string {
+	if key := r.Header.Get("X-Api-Key"); key != "" {
+		return key
+	}
+	if a := r.Header.Get("Authorization"); strings.HasPrefix(a, "Bearer ") {
+		return strings.TrimPrefix(a, "Bearer ")
+	}
+	return ""
+}
+
+// The session cookie is "<expiry>.<HMAC of the expiry under the API key>":
+// nothing is kept server-side, so a session survives a restart (idlegate),
+// yet a cookie stops working when it expires or the API key changes.
+func (s *Server) sessionValue(exp time.Time) string {
+	e := strconv.FormatInt(exp.Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(s.apiKey))
+	mac.Write([]byte("my-tasks-session|" + e))
+	return e + "." + hex.EncodeToString(mac.Sum(nil))
+}
+
+// sessionExpiry returns when a valid session cookie value expires, or false.
+func (s *Server) sessionExpiry(v string) (time.Time, bool) {
+	e, _, ok := strings.Cut(v, ".")
+	n, err := strconv.ParseInt(e, 10, 64)
+	if !ok || err != nil {
+		return time.Time{}, false
+	}
+	exp := time.Unix(n, 0)
+	if !s.now().Before(exp) || !hmac.Equal([]byte(v), []byte(s.sessionValue(exp))) {
+		return time.Time{}, false
+	}
+	return exp, true
+}
+
+func (s *Server) setSession(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: s.sessionValue(s.now().Add(sessionTTL)), Path: "/",
+		HttpOnly: true, Secure: isHTTPS(r), SameSite: http.SameSiteStrictMode, MaxAge: int(sessionTTL / time.Second)})
+}
+
+// isHTTPS: served over TLS, directly or by a proxy in front. Over plain HTTP
+// (the usual NAS setup) a Secure cookie would never be sent back.
+func isHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// sameOrigin rejects a cookie-authenticated change sent from another site.
+// SameSite=Strict alone doesn't cover that: another app on the same NAS
+// host (any port) counts as the same site. Browsers send Sec-Fetch-Site;
+// older ones only Origin. A request with neither isn't from a browser page.
+func sameOrigin(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
+		return site == "same-origin" || site == "none"
+	}
+	if o := r.Header.Get("Origin"); o != "" {
+		u, err := url.Parse(o)
+		if err != nil {
+			return false
 		}
+		return u.Host == r.Host || u.Host == r.Header.Get("X-Forwarded-Host")
 	}
-	if key != "" {
-		return hmac.Equal([]byte(key), []byte(s.apiKey))
-	}
-	if c, err := r.Cookie(sessionCookie); err == nil {
-		return hmac.Equal([]byte(c.Value), []byte(s.sessionToken))
-	}
-	return false
+	return true
 }
 
 func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.authorized(r) {
+		if key := requestKey(r); key != "" {
+			if !s.checkKey(w, r, key) {
+				return
+			}
+			h(w, r)
+			return
+		}
+		// The cookie needs no attempt limit: it is a 256-bit MAC, not
+		// guessable, and leaving it out keeps the owner signed in while
+		// someone hammers the key.
+		c, err := r.Cookie(sessionCookie)
+		exp, ok := time.Time{}, false
+		if err == nil {
+			exp, ok = s.sessionExpiry(c.Value)
+		}
+		if !ok {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
+		if !sameOrigin(r) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-origin request refused"})
+			return
+		}
+		// Sliding expiry: a session in use is renewed once half of it is gone.
+		if exp.Sub(s.now()) < sessionTTL/2 {
+			s.setSession(w, r)
+		}
 		h(w, r)
 	}
+}
+
+// checkKey checks an API key against the failed-attempt limit, writing the
+// error response if it is refused.
+func (s *Server) checkKey(w http.ResponseWriter, r *http.Request, key string) bool {
+	ip := clientIP(r)
+	if !s.limiter.allow(ip) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(s.limiter.every/time.Second)))
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many wrong API keys, try again later"})
+		return false
+	}
+	if !s.keyMatches(key) {
+		s.limiter.fail(ip)
+		log.Printf("auth: wrong API key from %s", ip)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "wrong API key"})
+		return false
+	}
+	return true
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -285,18 +399,91 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if !hmac.Equal([]byte(in.Key), []byte(s.apiKey)) {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "wrong API key"})
+	if !s.checkKey(w, r, in.Key) {
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: s.sessionToken, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 365 * 24 * 3600})
+	s.setSession(w, r)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", HttpOnly: true,
+		Secure: isHTTPS(r), SameSite: http.SameSiteStrictMode, MaxAge: -1})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// clientIP is the peer address. X-Forwarded-For is not trusted: anyone can
+// send it. Behind a proxy (idlegate) every request shares the proxy's address,
+// so the attempt limit is effectively global there.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// failLimiter allows burst wrong keys per client, then one more per every.
+// A client over the limit is refused without its key being checked, so
+// guessing a key runs at a few hundred tries an hour at most.
+type failLimiter struct {
+	mu    sync.Mutex
+	burst float64
+	every time.Duration
+	now   func() time.Time
+	fails map[string]failCount
+}
+
+type failCount struct {
+	n  float64 // failures, decaying by one per every
+	at time.Time
+}
+
+func newFailLimiter(burst int, every time.Duration, now func() time.Time) *failLimiter {
+	return &failLimiter{burst: float64(burst), every: every, now: now, fails: map[string]failCount{}}
+}
+
+func (l *failLimiter) level(ip string, now time.Time) float64 {
+	f, ok := l.fails[ip]
+	if !ok {
+		return 0
+	}
+	return max(0, f.n-float64(now.Sub(f.at))/float64(l.every))
+}
+
+func (l *failLimiter) allow(ip string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.level(ip, l.now()) <= l.burst-1
+}
+
+func (l *failLimiter) fail(ip string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	if len(l.fails) >= 1024 { // forget clients that have cooled down
+		for k := range l.fails {
+			if l.level(k, now) == 0 {
+				delete(l.fails, k)
+			}
+		}
+	}
+	l.fails[ip] = failCount{n: l.level(ip, now) + 1, at: now}
+}
+
+// securityHeaders: no framing (clickjacking), no MIME sniffing, scripts only
+// from the app itself. Inline style attributes are used by the UI, so
+// style-src allows them; nothing else inline is needed.
+func securityHeaders(w http.ResponseWriter, r *http.Request) {
+	hd := w.Header()
+	hd.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
+		"img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+	hd.Set("X-Content-Type-Options", "nosniff")
+	hd.Set("X-Frame-Options", "DENY")
+	hd.Set("Referrer-Policy", "same-origin")
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		hd.Set("Cache-Control", "no-store")
+	}
 }
 
 func pathID(r *http.Request) int {
