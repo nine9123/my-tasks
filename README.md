@@ -36,8 +36,8 @@ auth. No users, no permissions, no automations.
   modal over the page; *Open as page* opens the issue's own page
   (`#/i/WAR-1`) in a new tab. To link an issue, search for it by key or
   summary and pick it from the list.
-- **Search** in the header over all projects, by key, summary and
-  description. Press `/` to jump to it.
+- **Search** in the header over all projects, by key (or just its
+  number: `12` finds `WAR-12`), summary and description. Press `/` to jump to it.
 - **Epics**: a tab of their own, like Jira's *Timeline* without the
   dates: each open epic with its status and the progress of its issues,
   folding out to those issues; epics in a done status are folded away

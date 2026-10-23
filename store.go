@@ -754,9 +754,10 @@ type SearchHit struct {
 }
 
 // Search finds issues in all projects by key, summary or description, best
-// matches first: the issue with that exact key, then keys starting with the
-// text, then matches in the summary, then in the description. Within each,
-// the most recently updated come first.
+// matches first: the issue with that exact key (or, for a bare number like
+// "12", every issue with that number, whatever its project), then keys
+// starting with the text, then matches in the summary, then in the
+// description. Within each, the most recently updated come first.
 func (s *Store) Search(text string, limit int) []SearchHit {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -773,7 +774,7 @@ func (s *Store) Search(text string, limit int) []SearchHit {
 		key := strings.ToLower(i.Key)
 		score := 0
 		switch {
-		case key == q:
+		case key == q, q == strconv.Itoa(i.Number):
 			score = 4
 		case strings.HasPrefix(key, q):
 			score = 3
