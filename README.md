@@ -5,6 +5,8 @@ that actually get used: projects, a backlog, a board, releases. One static Go
 binary with the web UI built in, one JSON file for the data, an API key for
 auth. No users, no permissions, no automations.
 
+![The board: a column per status, cards with type, key and priority](docs/screenshots/board.png)
+
 - **Projects** with a key (`WAR`), issues numbered `WAR-1`, `WAR-2`, …
 - **Issues**: Task, Story, Bug (and Epic to group them), priority
   Highest → Lowest, a status, a release, a Markdown description, comments
@@ -52,6 +54,50 @@ auth. No users, no permissions, no automations.
 Deliberately left out: sprints, summary, timeline, archive, subtasks,
 assignees, labels, components, attachments, time tracking, automations.
 
+| Backlog | An issue |
+|---|---|
+| ![The backlog: the board section, a section per unreleased release, then the rest](docs/screenshots/backlog.png) | ![An issue open in a modal over the board, with description, links and comments](docs/screenshots/issue.png) |
+
+![Epics: each open epic with its progress, folding out to its issues](docs/screenshots/epics.png)
+
+(Demo data. The screenshots are taken in a headless Chromium against a
+local build.)
+
+## Benchmarks
+
+It is meant to sit on a NAS all day and cost nothing while nobody uses it.
+On the owner's TrueNAS box, the apps page showed this for the running
+container, after it had been in use:
+
+| CPU | Memory | Block I/O (read – write) | Network (in – out) |
+|-----|--------|--------------------------|--------------------|
+| 0 % | 32.4 MiB | 624 KiB – 0 B | 35 b/s – 0 b/s |
+
+Docker counts the container's page cache in that memory figure; the
+process itself is smaller. Measured on a native build made the way the
+Dockerfile makes it (`CGO_ENABLED=0 -trimpath -ldflags="-s -w"`, Go 1.23,
+Linux arm64), reading `/proc/<pid>/status`, `/stat` and `/io`:
+
+| | |
+|---|---|
+| Binary (= the whole image) | 6.4 MB |
+| Memory (RSS), just started | 7–8 MiB |
+| Memory (RSS), 2,000 issues loaded and listed 200 times | 13–18 MiB |
+| CPU while idle, 60 s | 0 ticks: no timers, no polling, nothing runs |
+| Creating 2,000 issues over HTTP (8 at a time) | 2.4 s, 0.37 s of CPU |
+| Disk writes during those 2,000 creates | 0 bytes (`SAVE_DELAY` holds them) |
+| One save of 2,000 issues | 0.8 MB written, one file |
+| `GET` a backlog of 2,000 issues | ~6 ms per request, curl included |
+
+So between requests it uses no CPU and does no I/O; the disk is touched
+once per `SAVE_DELAY` after a change, never on a read. Behind
+[idlegate](#behind-idlegate-stop-it-while-unused) it uses no memory
+either while nobody has it open.
+
+To check your own install: `docker stats my-tasks` (or the
+TrueNAS apps page) for CPU and memory; the `X-Saved` header on any API
+response says whether changes are still waiting in memory.
+
 ## Quick start
 
 ```sh
@@ -59,7 +105,9 @@ echo "API_KEY=$(openssl rand -hex 24)" > .env   # see .env.example
 docker compose up -d --build
 ```
 
-Open `http://<nas>:8099` and sign in with the API key.
+Open `http://<nas>:8099` and sign in with the API key. The key is the
+only password, so make it long and random as above: see
+[Security](#security).
 
 Everything lives in `/data/tasks.json` (mounted from `./data`). It is
 rewritten atomically, so copying it is a backup; include the folder in
@@ -206,7 +254,9 @@ docker compose run --rm tasks import /data/export-1.xml /data/export-2.xml
 ## API
 
 Everything the UI does goes through a JSON API. Send the key as
-`X-Api-Key: <key>` or `Authorization: Bearer <key>`.
+`X-Api-Key: <key>` or `Authorization: Bearer <key>`. A wrong key is a
+`401`; too many of them a `429` with `Retry-After` (see
+[Security](#security)).
 
 | | |
 |---|---|
@@ -221,6 +271,44 @@ Everything the UI does goes through a JSON API. Send the key as
 | `GET/POST /api/issues/{KEY-N}/comments`, `PATCH/DELETE /api/comments/{id}` | `{body}` |
 | `GET/POST /api/issues/{KEY-N}/links`, `DELETE /api/links/{id}` | `{type: "Blocks", issue: "KEY-M", inward: false}` |
 | `POST /api/import` | multipart, one or more `file` fields |
+
+## Security
+
+There is one secret, the API key, and one user. What protects it:
+
+- **Wrong keys are rate limited**, per client address: 10 wrong keys in a
+  row, then one more try every 6 seconds (about 600 an hour at most).
+  Over the limit even the right key gets `429 Too Many Requests`, so
+  guessing gets nowhere; a browser that is already signed in keeps
+  working, since its cookie isn't a key. Behind a proxy (idlegate) all
+  requests share the proxy's address, so there the limit is shared.
+  Wrong keys are logged with the address.
+- **Keys are compared in constant time**, without giving away their
+  length.
+- **Sessions expire.** Signing in sets an `HttpOnly`, `SameSite=Strict`
+  cookie holding an expiry and an HMAC of it under the API key. It lasts
+  30 days and is renewed while the tracker is in use. Nothing is stored
+  server-side, so you stay signed in across restarts (idlegate);
+  **changing `API_KEY` signs every browser out.** Sign out only clears
+  the cookie in that browser: a copied cookie stays valid until it
+  expires or the key changes. Over HTTPS (`X-Forwarded-Proto: https` from
+  a TLS proxy in front) the cookie is also `Secure`.
+- **No cross-site changes.** A change (`POST`, `PATCH`, `PUT`, `DELETE`)
+  authenticated by the cookie must come from the tracker's own pages
+  (`Sec-Fetch-Site: same-origin`, or a matching `Origin`), otherwise it
+  gets `403`. `SameSite` alone doesn't stop another app on the same NAS
+  host, on another port, from sending them. Requests with the API key
+  are not affected.
+- **Response headers**: a Content-Security-Policy allowing scripts only
+  from the app itself and no framing, `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, and
+  `Cache-Control: no-store` on the API.
+- A key shorter than 16 characters is accepted but logged as a warning
+  at startup.
+
+Not covered: the server speaks plain HTTP. On your LAN that is what most
+NAS apps do; from outside, put it behind a TLS proxy or a VPN rather than
+publishing the port.
 
 ## Development
 

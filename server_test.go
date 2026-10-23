@@ -85,6 +85,137 @@ func TestAuth(t *testing.T) {
 	}
 }
 
+func sessionCookieOf(t *testing.T, r *http.Response) *http.Cookie {
+	t.Helper()
+	for _, c := range r.Cookies() {
+		if c.Name == sessionCookie {
+			return c
+		}
+	}
+	t.Fatal("no session cookie")
+	return nil
+}
+
+func TestWrongKeysAreLimited(t *testing.T) {
+	ts := newTestServer(t)
+	r, _ := call(t, ts, "POST", "/api/login", `{"key":"secret"}`, nil)
+	cookie := map[string]string{"Cookie": sessionCookie + "=" + sessionCookieOf(t, r).Value}
+	for i := 0; i < 10; i++ {
+		if r, _ := call(t, ts, "GET", "/api/projects", "", map[string]string{"X-Api-Key": "guess"}); r.StatusCode != 401 {
+			t.Fatalf("guess %d: %d", i, r.StatusCode)
+		}
+	}
+	// Over the limit even the right key is refused, at login too...
+	if r, _ := call(t, ts, "GET", "/api/projects", "", key); r.StatusCode != 429 || r.Header.Get("Retry-After") == "" {
+		t.Fatalf("locked key: %d", r.StatusCode)
+	}
+	if r, _ := call(t, ts, "POST", "/api/login", `{"key":"secret"}`, nil); r.StatusCode != 429 {
+		t.Fatalf("locked login: %d", r.StatusCode)
+	}
+	// ...but a signed-in browser keeps working.
+	if r, _ := call(t, ts, "GET", "/api/projects", "", cookie); r.StatusCode != 200 {
+		t.Fatalf("cookie while locked: %d", r.StatusCode)
+	}
+}
+
+func TestFailLimiterCoolsDown(t *testing.T) {
+	now := time.Unix(1e9, 0)
+	l := newFailLimiter(3, time.Second, func() time.Time { return now })
+	for i := 0; i < 3; i++ {
+		l.fail("a")
+	}
+	if l.allow("a") || !l.allow("b") {
+		t.Fatal("a should be locked, b not")
+	}
+	now = now.Add(time.Second)
+	if !l.allow("a") {
+		t.Fatal("one more try after a second")
+	}
+	l.fail("a")
+	if l.allow("a") {
+		t.Fatal("locked again")
+	}
+}
+
+func TestSessionCookie(t *testing.T) {
+	srv := NewServer(newTestStore(t), "secret")
+	now := time.Unix(1e9, 0)
+	srv.now = func() time.Time { return now }
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	r, _ := call(t, ts, "POST", "/api/login", `{"key":"secret"}`, nil)
+	c := sessionCookieOf(t, r)
+	if c.Secure || c.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("cookie flags: %+v", c)
+	}
+	cookie := map[string]string{"Cookie": sessionCookie + "=" + c.Value}
+
+	// Not renewed while fresh; renewed once half the TTL is gone.
+	if r, _ := call(t, ts, "GET", "/api/projects", "", cookie); r.StatusCode != 200 || len(r.Cookies()) != 0 {
+		t.Fatalf("fresh: %d %v", r.StatusCode, r.Cookies())
+	}
+	now = now.Add(sessionTTL/2 + time.Hour)
+	r, _ = call(t, ts, "GET", "/api/projects", "", cookie)
+	if r.StatusCode != 200 {
+		t.Fatalf("half way: %d", r.StatusCode)
+	}
+	renewed := sessionCookieOf(t, r)
+	now = now.Add(sessionTTL / 2)
+	if r, _ := call(t, ts, "GET", "/api/projects", "", cookie); r.StatusCode != 401 {
+		t.Fatalf("expired: %d", r.StatusCode)
+	}
+	if r, _ := call(t, ts, "GET", "/api/projects", "", map[string]string{"Cookie": sessionCookie + "=" + renewed.Value}); r.StatusCode != 200 {
+		t.Fatalf("renewed: %d", r.StatusCode)
+	}
+
+	// A cookie with a later expiry but the old MAC is forged.
+	exp, mac, _ := strings.Cut(renewed.Value, ".")
+	n, _ := strconv.ParseInt(exp, 10, 64)
+	forged := strconv.FormatInt(n+3600, 10) + "." + mac
+	if r, _ := call(t, ts, "GET", "/api/projects", "", map[string]string{"Cookie": sessionCookie + "=" + forged}); r.StatusCode != 401 {
+		t.Fatalf("forged expiry: %d", r.StatusCode)
+	}
+	// Behind a TLS proxy the cookie is Secure.
+	r, _ = call(t, ts, "POST", "/api/login", `{"key":"secret"}`, map[string]string{"X-Forwarded-Proto": "https"})
+	if !sessionCookieOf(t, r).Secure {
+		t.Fatal("not Secure behind https")
+	}
+}
+
+func TestCrossOriginRefused(t *testing.T) {
+	ts := newTestServer(t)
+	r, _ := call(t, ts, "POST", "/api/login", `{"key":"secret"}`, nil)
+	cookie := sessionCookie + "=" + sessionCookieOf(t, r).Value
+	body := `{"key":"APP","name":"App"}`
+	if r, _ := call(t, ts, "POST", "/api/projects", body, map[string]string{"Cookie": cookie, "Sec-Fetch-Site": "same-site"}); r.StatusCode != 403 {
+		t.Fatalf("same-site, other origin: %d", r.StatusCode)
+	}
+	if r, _ := call(t, ts, "POST", "/api/projects", body, map[string]string{"Cookie": cookie, "Origin": "http://evil.example"}); r.StatusCode != 403 {
+		t.Fatalf("foreign origin: %d", r.StatusCode)
+	}
+	if r, _ := call(t, ts, "GET", "/api/projects", "", map[string]string{"Cookie": cookie, "Sec-Fetch-Site": "cross-site"}); r.StatusCode != 200 {
+		t.Fatalf("cross-site read: %d", r.StatusCode)
+	}
+	if r, b := call(t, ts, "POST", "/api/projects", body, map[string]string{"Cookie": cookie, "Sec-Fetch-Site": "same-origin", "Origin": ts.URL}); r.StatusCode != 200 {
+		t.Fatalf("same origin: %d %s", r.StatusCode, b)
+	}
+	// The API key is not sent by browsers on their own, so it needs no check.
+	if r, _ := call(t, ts, "DELETE", "/api/projects/APP", "", map[string]string{"X-Api-Key": "secret", "Origin": "http://evil.example"}); r.StatusCode != 204 {
+		t.Fatalf("key from elsewhere: %d", r.StatusCode)
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	ts := newTestServer(t)
+	r, _ := call(t, ts, "GET", "/", "", nil)
+	if !strings.Contains(r.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'") || r.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("headers: %v", r.Header)
+	}
+	if r, _ := call(t, ts, "GET", "/api/projects", "", key); r.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("api cache: %q", r.Header.Get("Cache-Control"))
+	}
+}
+
 func TestIssueFlowOverHTTP(t *testing.T) {
 	ts := newTestServer(t)
 	if r, b := call(t, ts, "POST", "/api/projects", `{"key":"APP","name":"App"}`, key); r.StatusCode != 200 {
