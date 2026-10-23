@@ -59,6 +59,15 @@ input.inline { flex: 1; min-width: 0; width: 100%; padding: 1px 6px; }
 .search-results .hit.on, .search-results .hit:hover { background: var(--hover); }
 .search-results .key { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .search-results .sum { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The save button: Saved (muted), Save (changes waiting for the save
+   delay), Saving… with a spinner while a write is shown. */
+button.save { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 92px; white-space: nowrap; }
+button.save.saved { background: none; color: var(--muted); }
+button.save.unsaved { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.save.busy { cursor: progress; }
+button.save .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+button.save .spin { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 #app { padding: 20px; max-width: 1500px; margin: 0 auto; }
 #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); max-width: calc(100vw - 24px); overflow-wrap: anywhere; background: var(--danger); color: #fff; padding: 8px 16px; border-radius: 4px; z-index: 20; }
 

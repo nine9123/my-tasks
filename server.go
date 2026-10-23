@@ -48,6 +48,7 @@ func (s *Server) routes() {
 	api := func(pattern string, h func(*http.Request) (any, error)) {
 		m.HandleFunc(pattern, s.auth(func(w http.ResponseWriter, r *http.Request) {
 			v, err := h(r)
+			s.saveHeaders(w)
 			if err != nil {
 				writeError(w, err)
 				return
@@ -208,6 +209,23 @@ func (s *Server) routes() {
 	})
 
 	api("POST /api/import", s.importJira)
+
+	// The header's save button: POST writes what the save delay holds back
+	// now, GET only asks. Every API response carries the save state in
+	// X-Saved and X-Save-In (see saveHeaders); these too, after the write.
+	api("POST /api/save", func(r *http.Request) (any, error) { return nil, s.store.Flush() })
+	api("GET /api/save", func(r *http.Request) (any, error) { return nil, nil })
+}
+
+// saveHeaders tells the client whether everything is on disk (X-Saved:
+// true) or changes are still waiting for the save delay (X-Saved: false,
+// X-Save-In: milliseconds until they are written).
+func (s *Server) saveHeaders(w http.ResponseWriter) {
+	unsaved, in := s.store.Unsaved()
+	w.Header().Set("X-Saved", strconv.FormatBool(!unsaved))
+	if unsaved {
+		w.Header().Set("X-Save-In", strconv.FormatInt(in.Milliseconds(), 10))
+	}
 }
 
 // importJira takes one or more Jira XML exports as multipart "file" fields.
