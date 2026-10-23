@@ -390,6 +390,9 @@ func TestSearch(t *testing.T) {
 	if len(hs) != 1 || hs[0].Project != "WEB" || hs[0].Status != "TODO" || hs[0].Done {
 		t.Fatalf("hit: %+v", hs)
 	}
+	if got := keys(s.Search(" 1 ", 20)); len(got) != 2 || got[0] != "WEB-1" || got[1] != "APP-1" {
+		t.Fatalf("bare number matches the key in every project: %v", got)
+	}
 	if got := s.Search("  ", 20); len(got) != 0 {
 		t.Fatalf("empty query: %v", got)
 	}
