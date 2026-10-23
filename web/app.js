@@ -878,6 +878,13 @@ async function pageBoard(key) {
     draw();
   };
 
+  // hideDone hides the done issues now on the board (in every done
+  // column), so they don't stay for the two weeks; false shows them again.
+  const hideDone = async (hide) => {
+    ctx.project = await api(hide ? 'POST' : 'DELETE', `/api/projects/${key}/hide-done`);
+    draw();
+  };
+
   const card = (i, s, items) => {
     const save = issueEditor(i, draw);
     const rel = ctx.relById.get(i.release);
@@ -904,15 +911,20 @@ async function pageBoard(key) {
   const draw = () => {
     const q = st.q.toLowerCase();
     const rel = (i) => ctx.relById.get(i.release);
+    // Done issues resolved before this are left out of the unreleased work,
+    // as are those resolved before the column's ⋯ Hide done issues.
+    const hiddenBefore = ctx.project.doneHiddenBefore && new Date(ctx.project.doneHiddenBefore).toISOString();
+    const shown = (i) => i.resolved && new Date(i.resolved).toISOString() >= doneSince
+      && !(hiddenBefore && new Date(i.resolved).toISOString() <= hiddenBefore);
     // Issues still in the backlog are not on the board.
-    const oldDone = new Map(); // status id → done issues hidden for their age
+    const oldDone = new Map(); // status id → done issues hidden for their age or by Hide done issues
     const visible = ctx.issues.filter((i) => {
       if (i.type === 'Epic' || !i.board) return false;
       if (st.epic === 'none' ? i.epic : st.epic && String(i.epic) !== st.epic) return false;
       if (q && !(i.key + ' ' + i.summary).toLowerCase().includes(q)) return false;
       if (st.release === 'open') {
         if (rel(i) && rel(i).released) return false;
-        if (!isDone(ctx.project, i) || (i.resolved && new Date(i.resolved).toISOString() >= doneSince)) return true;
+        if (!isDone(ctx.project, i) || shown(i)) return true;
         oldDone.set(i.status, (oldDone.get(i.status) || 0) + 1);
         return false;
       }
@@ -931,11 +943,18 @@ async function pageBoard(key) {
       }
       const list = h('div.clist', items.map((i) => card(i, s, items)));
       const col = h('div.col',
-        h('div.head', `${s.name} `, h('span', String(items.length + more))),
+        h('div.head', h('span.name', `${s.name} `, h('span', String(items.length + more))),
+          s.category === 'done' && st.release === 'open' && (items.length || hiddenBefore)
+            ? iconButton('⋯', 'More actions', (b) => popMenu(b, [
+              items.length ? { label: 'Hide done issues', onclick: () => hideDone(true) } : null,
+              hiddenBefore ? { label: 'Show hidden done issues', onclick: () => hideDone(false) } : null,
+            ])) : null),
         list,
         more ? h('div.muted.small', `${more} older not shown`) : null,
         oldDone.get(s.id)
-          ? h('div.muted.small', `${oldDone.get(s.id)} done more than ${DONE_DAYS} days ago not shown: pick a release or Everything to see them.`) : null);
+          ? h('div.muted.small', hiddenBefore
+            ? `${oldDone.get(s.id)} done issues hidden: pick a release or Everything to see them, or Show hidden done issues in ⋯.`
+            : `${oldDone.get(s.id)} done more than ${DONE_DAYS} days ago not shown: pick a release or Everything to see them.`) : null);
       col.addEventListener('dragover', (e) => {
         if (!dragKey) return;
         e.preventDefault();

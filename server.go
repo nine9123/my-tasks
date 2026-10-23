@@ -88,6 +88,12 @@ func (s *Server) routes() {
 		}
 		return s.store.UpdateProject(r.PathValue("key"), in.Name, in.Description)
 	})
+	api("POST /api/projects/{key}/hide-done", func(r *http.Request) (any, error) {
+		return s.store.HideDone(r.PathValue("key"), true)
+	})
+	api("DELETE /api/projects/{key}/hide-done", func(r *http.Request) (any, error) {
+		return s.store.HideDone(r.PathValue("key"), false)
+	})
 	api("DELETE /api/projects/{key}", func(r *http.Request) (any, error) {
 		return nil, s.store.DeleteProject(r.PathValue("key"))
 	})

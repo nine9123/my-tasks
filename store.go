@@ -46,6 +46,9 @@ type Project struct {
 	NextNumber   int       `json:"nextNumber"`
 	NextStatusID int       `json:"nextStatusId"`
 	Created      time.Time `json:"created"`
+	// The board's unreleased work leaves out done issues resolved before
+	// this, as it does those resolved more than two weeks ago.
+	DoneHiddenBefore *time.Time `json:"doneHiddenBefore"`
 }
 
 type Release struct {
@@ -417,6 +420,23 @@ func (s *Store) UpdateProject(key string, name, desc *string) (Project, error) {
 	}
 	if desc != nil {
 		p.Description = *desc
+	}
+	return *p, s.save()
+}
+
+// HideDone hides the done issues on the project's board, the ones resolved
+// until now; hide false shows them again.
+func (s *Store) HideDone(key string, hide bool) (Project, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.projectByKey(key)
+	if p == nil {
+		return Project{}, notFound("project %s not found", key)
+	}
+	p.DoneHiddenBefore = nil
+	if hide {
+		now := s.now()
+		p.DoneHiddenBefore = &now
 	}
 	return *p, s.save()
 }

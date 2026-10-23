@@ -394,3 +394,27 @@ func TestSearch(t *testing.T) {
 		t.Fatalf("empty query: %v", got)
 	}
 }
+
+func TestHideDone(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateProject("APP", "x", "")
+	now := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	p, err := s.HideDone("APP", true)
+	if err != nil || p.DoneHiddenBefore == nil || !p.DoneHiddenBefore.Equal(now) {
+		t.Fatalf("hide: %+v %v", p, err)
+	}
+	s2, err := OpenStore(s.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := s2.Project("APP"); p.DoneHiddenBefore == nil || !p.DoneHiddenBefore.Equal(now) {
+		t.Fatalf("not persisted: %+v", p)
+	}
+	if p, _ := s.HideDone("APP", false); p.DoneHiddenBefore != nil {
+		t.Fatalf("show again: %+v", p)
+	}
+	if _, err := s.HideDone("NOPE", true); errStatus(err) != 404 {
+		t.Fatalf("unknown project: %v", err)
+	}
+}

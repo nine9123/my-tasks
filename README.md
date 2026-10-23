@@ -24,7 +24,9 @@ auth. No users, no permissions, no automations.
   cards between and within columns to set status and order. Shows the
   unreleased work by default; pick a single release or everything instead.
   As on Jira's boards, the unreleased work shows done issues only for 14
-  days after they were resolved. The epic filter has *No epic*, which is
+  days after they were resolved; *Hide done issues* in the done column's
+  `⋯` menu hides the ones there now without waiting (*Show hidden done
+  issues* brings them back). The epic filter has *No epic*, which is
   what Jira's *No Epic* swimlane shows when grouped by epic. When the
   columns don't fit, a small map of them sits in the bottom-right corner, as
   on Jira: drag its frame to scroll the board sideways.
