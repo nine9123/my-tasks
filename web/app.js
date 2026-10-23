@@ -565,6 +565,17 @@ function createIssueDialog(ctx, preset) {
     if (preset.onCreated) preset.onCreated(issue);
     else route();
   }
+  // A click on the backdrop (outside the dialog's box) closes it. The
+  // padding is on the dialog itself, so a click on it is told apart by
+  // where it is, not by its target.
+  const outside = (e) => {
+    if (e.target !== dlg) return false;
+    const r = dlg.getBoundingClientRect();
+    return e.clientX < r.left || e.clientX >= r.right || e.clientY < r.top || e.clientY >= r.bottom;
+  };
+  let downOutside = false;
+  dlg.addEventListener('mousedown', (e) => { downOutside = outside(e); });
+  dlg.addEventListener('click', (e) => { if (downOutside && outside(e)) dlg.close(); });
   dlg.addEventListener('close', () => dlg.remove());
   document.body.append(dlg);
   dlg.showModal();
