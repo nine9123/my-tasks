@@ -19,7 +19,7 @@ auth. No users, no permissions, no automations.
   to reorder, to move an issue into another release, or onto / off the
   board; type into a section's input and press Enter to create an issue in
   TODO, already tagged with that release.
-- **Board**: a column per status with the issues sent to the board (from
+- **Board**: the tab a project opens on. A column per status with the issues sent to the board (from
   the backlog, or by moving an issue out of a to-do status anywhere). Drag
   cards between and within columns to set status and order. Shows the
   unreleased work by default; pick a single release or everything instead.
@@ -29,7 +29,8 @@ auth. No users, no permissions, no automations.
   issues* brings them back). The epic filter has *No epic*, which is
   what Jira's *No Epic* swimlane shows when grouped by epic. When the
   columns don't fit, a small map of them sits in the bottom-right corner, as
-  on Jira: drag its frame to scroll the board sideways.
+  on Jira: drag its frame to scroll the board sideways. Cards look like
+  Jira's: the summary (up to three lines), then the type, key and priority.
 - **Quick edits** on backlog rows and board cards, as in Jira: click the
   type or priority icon to change it, the pencil to rename in place, and
   the `⋯` menu to send an issue to the board / backlog or move it to the

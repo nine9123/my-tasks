@@ -125,12 +125,23 @@ input.inline { flex: 1; min-width: 0; width: 100%; padding: 1px 6px; }
 .col.drop { outline: 2px solid var(--accent); }
 .col > .head { font-size: 12px; font-weight: 600; text-transform: uppercase; color: var(--muted); margin: 2px 4px 8px; display: flex; align-items: center; gap: 4px; min-height: 20px; }
 .col > .head .name { flex: 1; }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 8px; margin-bottom: 6px; cursor: grab; }
+.card { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px 8px; margin-bottom: 6px; cursor: grab; box-shadow: 0 1px 1px rgba(9, 30, 66, .12); }
 .card:hover { border-color: var(--muted); }
-.card .meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; font-size: 12px; color: var(--muted); }
-.card .meta .key { margin-left: auto; }
-.card .ctop { display: flex; gap: 2px; align-items: flex-start; }
-.card .csum { flex: 1; overflow-wrap: anywhere; }
+/* The summary takes the card's width, up to three lines; the edit and menu
+   buttons show over its top right corner on hover. */
+.card .csum { overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+.card .cacts { position: absolute; top: 6px; right: 6px; display: flex; gap: 2px; background: var(--panel); border-radius: 4px; visibility: hidden; }
+.card:hover .cacts, .card .cacts:focus-within { visibility: visible; }
+.card .ctags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
+.card .meta { display: flex; gap: 4px; align-items: center; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.card .meta .key { font-weight: 600; white-space: nowrap; }
+.card .meta button.icon:last-child { margin-left: auto; }
+.tglyph { display: inline-flex; flex: none; }
+.tglyph .ico { width: 16px; height: 16px; color: inherit; }
+.tglyph.Task { color: var(--task); }
+.tglyph.Story { color: var(--story); }
+.tglyph.Bug { color: var(--bug); }
+.tglyph.Epic { color: var(--epic); }
 .clist { min-height: 40px; }
 .drop-line { height: 2px; margin: -4px 0 2px; background: var(--accent); border-radius: 1px; }
 
@@ -214,6 +225,10 @@ textarea.inline { flex: 1; min-width: 0; width: 100%; min-height: 0; padding: 1p
 /* Touch screens have no hover: show the edit and menu buttons always. */
 @media (hover: none) {
   .row button.icon.hover, .card button.icon.hover { visibility: visible; }
+  /* Always shown, they keep a place of their own beside the summary. */
+  .card .ctop { display: flex; gap: 2px; align-items: flex-start; }
+  .card .csum { flex: 1; }
+  .card .cacts { position: static; visibility: visible; }
 }
 
 /* small screens */

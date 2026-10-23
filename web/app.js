@@ -91,6 +91,9 @@ function fmtDateTime(s) {
 
 const PRIO_ICON = { Highest: '⇈', High: '↑', Medium: '=', Low: '↓', Lowest: '⇊' };
 const typeIcon = (t) => h('span.type.' + t, { title: t }, t[0]);
+// typeGlyph is the outline form of the type, as Jira draws it on board cards.
+const TYPE_GLYPH = { Story: 'story', Task: 'task', Bug: 'bug', Epic: 'epic' };
+const typeGlyph = (t) => h('span.tglyph.' + t, { title: t }, icon(TYPE_GLYPH[t] || 'task'));
 const prioIcon = (p) => h('span.prio.' + p, { title: p }, PRIO_ICON[p] || '');
 
 function statusPill(project, id) {
@@ -105,6 +108,9 @@ const ICONS = {
   board: [['rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }], ['path', { d: 'M9 4v16M15 4v16' }]],
   backlog: [['path', { d: 'M4 6h16M4 12h16M4 18h10' }]],
   epic: [['path', { d: 'M13 2 4 14h7l-1 8 9-12h-7z' }]],
+  story: [['path', { d: 'M6 3h12v18l-6-4.5L6 21z' }]],
+  task: [['rect', { x: 3, y: 3, width: 18, height: 18, rx: 3 }], ['path', { d: 'm8 12 3 3 5-6' }]],
+  bug: [['rect', { x: 3, y: 3, width: 18, height: 18, rx: 3 }], ['circle', { cx: 12, cy: 12, r: 4 }]],
   created: [['rect', { x: 3, y: 5, width: 18, height: 16, rx: 2 }], ['path', { d: 'M3 10h18M8 3v4M16 3v4' }]],
   updated: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M12 7v5l3 2' }]],
   resolved: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'm8 12 3 3 5-6' }]],
@@ -322,8 +328,9 @@ function editInline(el, value, save, multiline) {
   input.select();
 }
 
-function typeButton(issue, save) {
-  if (issue.type === 'Epic') return typeIcon('Epic');
+// glyph draws the type on the button (typeIcon unless given).
+function typeButton(issue, save, glyph = typeIcon) {
+  if (issue.type === 'Epic') return glyph('Epic');
   const b = h('button.icon', {
     title: `${issue.type}: change type`,
     onclick: (e) => {
@@ -332,7 +339,7 @@ function typeButton(issue, save) {
         icon: typeIcon(t), label: t, on: t === issue.type, onclick: () => { if (t !== issue.type) save({ type: t }); },
       })));
     },
-  }, typeIcon(issue.type));
+  }, glyph(issue.type));
   return b;
 }
 
@@ -512,7 +519,7 @@ function showLogin() {
 
 function topNav(projects) {
   $nav.replaceChildren(
-    ...(projects || []).map((p) => h('a', { href: `#/p/${p.key}/backlog` }, p.key)),
+    ...(projects || []).map((p) => h('a', { href: `#/p/${p.key}/board` }, p.key)),
     h('span.spacer'),
     searchBox(),
     h('a', { href: '#/import' }, 'Import from Jira'),
@@ -605,7 +612,7 @@ async function pageProjects() {
   const f = { key: '', name: '' };
   $app.replaceChildren(
     h('h1', 'Projects'),
-    projects.length ? h('div.cards', projects.map((p) => h('a.panel', { href: `#/p/${p.key}/backlog` },
+    projects.length ? h('div.cards', projects.map((p) => h('a.panel', { href: `#/p/${p.key}/board` },
       h('h3', p.name), h('div.muted.small', p.key), p.description ? h('div.small', p.description) : null)))
       : h('p.muted', 'No projects yet. Create one below, or ', h('a', { href: '#/import' }, 'import a Jira export'), '.'),
     h('h2', 'New project'),
@@ -613,7 +620,7 @@ async function pageProjects() {
       onsubmit: async (e) => {
         e.preventDefault();
         const p = await api('POST', '/api/projects', { key: f.key, name: f.name });
-        location.hash = `#/p/${p.key}/backlog`;
+        location.hash = `#/p/${p.key}/board`;
       },
     },
     h('input', { type: 'text', placeholder: 'KEY', size: 8, oninput: (e) => { f.key = e.target.value.toUpperCase(); } }),
@@ -892,7 +899,9 @@ async function pageBoard(key) {
     const editSummary = () => editInline(sum, i.summary, (v) => save({ summary: v }), true);
     const k = items.indexOf(i);
     const c = h('div.card', { draggable: 'true', 'data-key': i.key, onclick: () => openIssue(i.key) },
-      h('div.ctop', sum,
+      // The summary, then the epic and release if set, then the type and key
+      // on the left and the priority on the right, like Jira's cards.
+      h('div.ctop', sum, h('span.cacts',
         iconButton('✎', 'Edit summary', editSummary),
         iconButton('⋯', 'More actions', (b) => popMenu(b, [
           { label: 'Open', onclick: () => openIssue(i.key) },
@@ -901,9 +910,9 @@ async function pageBoard(key) {
           k > 0 ? { label: 'Move to top', onclick: () => moveCard(i.key, s.id, { before: items[0].key }) } : null,
           k < items.length - 1 ? { label: 'Move to bottom', onclick: () => moveCard(i.key, s.id, { after: items[items.length - 1].key }) } : null,
           { label: 'Send to backlog', onclick: () => save({ board: false }) },
-        ]))),
-      h('div.meta', typeButton(i, save), prioButton(i, save), epicChip(ctx, i),
-        rel ? h('span.rel', rel.name) : null, h('span.key', i.key)));
+        ])))),
+      i.epic || rel ? h('div.ctags', epicChip(ctx, i), rel ? h('span.rel', rel.name) : null) : null,
+      h('div.meta', typeButton(i, save, typeGlyph), h('span.key', i.key), prioButton(i, save)));
     c.addEventListener('dragstart', (e) => { dragKey = i.key; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', i.key); });
     return c;
   };
@@ -1254,7 +1263,7 @@ async function issueView(key, host) {
 
   return h('div',
     h('div.muted.small', { style: 'margin-bottom:6px' },
-      h('a', { href: `#/p/${p.key}/backlog` }, p.name), ' / ',
+      h('a', { href: `#/p/${p.key}/board` }, p.name), ' / ',
       epic ? [issueLink(epic.key, epic.key), ' / '] : null, issue.key),
     h('div.issue',
       h('div',
@@ -1331,7 +1340,7 @@ async function issueView(key, host) {
 }
 
 async function pageIssue(key) {
-  const host = { modal: false, refresh: route, deleted: (pkey) => { location.hash = `#/p/${pkey}/backlog`; } };
+  const host = { modal: false, refresh: route, deleted: (pkey) => { location.hash = `#/p/${pkey}/board`; } };
   const [view, projects] = await Promise.all([issueView(key, host), api('GET', '/api/projects')]);
   topNav(projects);
   $app.replaceChildren(view);
@@ -1457,7 +1466,7 @@ async function pageImport() {
           result.replaceChildren(h('div.panel', { style: 'margin-top:14px' },
             h('h2', { style: 'margin-top:0' }, 'Done'),
             h('p', `${r.files} file(s): ${r.issuesCreated} issues created, ${r.issuesUpdated} updated, ${r.comments} comments, ${r.links} links.`),
-            r.projectsCreated.length ? h('p', 'Projects created: ', r.projectsCreated.map((k) => h('a', { href: `#/p/${k}/backlog`, style: 'margin-right:8px' }, k))) : null,
+            r.projectsCreated.length ? h('p', 'Projects created: ', r.projectsCreated.map((k) => h('a', { href: `#/p/${k}/board`, style: 'margin-right:8px' }, k))) : null,
             r.releasesCreated.length ? h('p', 'Releases created: ' + r.releasesCreated.join(', ')) : null,
             r.statusesAdded.length ? h('p', 'Statuses added: ' + r.statusesAdded.join(', ')) : null,
             r.warnings.length ? [h('h2', `Warnings (${r.warnings.length})`), h('ul.warnings', r.warnings.map((w) => h('li', w)))] : null));
@@ -1477,8 +1486,8 @@ async function route() {
     const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
     if (!META) META = await api('GET', '/api/meta');
     if (parts[0] === 'p' && parts[1]) {
-      const page = { backlog: pageBacklog, board: pageBoard, epics: pageEpics, releases: pageReleases, settings: pageSettings }[parts[2] || 'backlog'];
-      await (page || pageBacklog)(parts[1]);
+      const page = { backlog: pageBacklog, board: pageBoard, epics: pageEpics, releases: pageReleases, settings: pageSettings }[parts[2] || 'board'];
+      await (page || pageBoard)(parts[1]);
     } else if (parts[0] === 'i' && parts[1]) {
       await pageIssue(parts[1]);
     } else if (parts[0] === 'import') {
