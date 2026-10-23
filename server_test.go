@@ -7,8 +7,11 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newTestServer(t *testing.T) *httptest.Server {
@@ -127,6 +130,33 @@ func TestIssueFlowOverHTTP(t *testing.T) {
 	}
 	if r, _ := call(t, ts, "DELETE", "/api/issues/APP-1", "", key); r.StatusCode != 204 {
 		t.Fatalf("delete: %d", r.StatusCode)
+	}
+}
+
+func TestSaveOverHTTP(t *testing.T) {
+	store := newTestStore(t)
+	store.SetSaveDelay(time.Hour)
+	ts := httptest.NewServer(NewServer(store, "secret"))
+	t.Cleanup(ts.Close)
+	if r, _ := call(t, ts, "GET", "/api/projects", "", key); r.Header.Get("X-Saved") != "true" || r.Header.Get("X-Save-In") != "" {
+		t.Fatalf("nothing changed: X-Saved %q, X-Save-In %q", r.Header.Get("X-Saved"), r.Header.Get("X-Save-In"))
+	}
+	// The change waits for the save delay; the response says so.
+	r, _ := call(t, ts, "POST", "/api/projects", `{"key":"APP","name":"App"}`, key)
+	if ms, err := strconv.Atoi(r.Header.Get("X-Save-In")); r.Header.Get("X-Saved") != "false" || err != nil || ms <= 0 || ms > 3600000 {
+		t.Fatalf("pending: X-Saved %q, X-Save-In %q", r.Header.Get("X-Saved"), r.Header.Get("X-Save-In"))
+	}
+	if r, _ := call(t, ts, "GET", "/api/save", "", key); r.StatusCode != 204 || r.Header.Get("X-Saved") != "false" {
+		t.Fatalf("ask: %d %q", r.StatusCode, r.Header.Get("X-Saved"))
+	}
+	if r, _ := call(t, ts, "POST", "/api/save", "", nil); r.StatusCode != 401 {
+		t.Fatalf("save without key: %d", r.StatusCode)
+	}
+	if r, b := call(t, ts, "POST", "/api/save", "", key); r.StatusCode != 204 || r.Header.Get("X-Saved") != "true" {
+		t.Fatalf("save: %d %q %s", r.StatusCode, r.Header.Get("X-Saved"), b)
+	}
+	if _, err := os.Stat(store.path); err != nil {
+		t.Fatalf("not written: %v", err)
 	}
 }
 

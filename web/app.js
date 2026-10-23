@@ -52,6 +52,7 @@ async function api(method, path, body) {
   // outside the gate gets a 502 and the next one starts it again. Reads are
   // safe to repeat, so retry those once instead of showing the error.
   if (r.status === 502 && method === 'GET') r = await fetch(path, opts);
+  noteSave(r, method);
   if (r.status === 401 && path !== '/api/login') {
     showLogin();
     throw new Error('unauthorized');
@@ -73,6 +74,75 @@ async function api(method, path, body) {
 window.addEventListener('unhandledrejection', (e) => {
   if (e.reason && (e.reason.shown || e.reason.message === 'unauthorized')) e.preventDefault();
 });
+
+// ---------- saving ----------
+
+// The save button in the header shows whether everything is on disk; every
+// API response says so (X-Saved, X-Save-In: see saveHeaders in server.go).
+// A write takes a few milliseconds, too quick to see, so it is shown for at
+// least SAVE_SHOWN ms. With a save delay a change waits in memory: the
+// button reads Save until the delayed write is due, then shows the write
+// and asks the server whether it happened. Clicking it writes right away.
+const SAVE_SHOWN = 800;
+const saving = { unsaved: false, due: null, busy: 0, timer: null };
+
+function noteSave(r, method) {
+  const saved = r.headers.get('X-Saved');
+  if (saved === null) return;
+  clearTimeout(saving.timer);
+  if (saved === 'false') {
+    const due = Math.max(Number(r.headers.get('X-Save-In')) || 0, 0);
+    saving.unsaved = true;
+    saving.due = new Date(Date.now() + due);
+    saving.timer = setTimeout(() => saveNow(false).catch(() => {}), due + 1000);
+  } else {
+    // Written just now: by this change (no save delay), or by the delayed
+    // write since the last response.
+    if ((method !== 'GET' && r.ok) || saving.unsaved) showWrite(Promise.resolve());
+    saving.unsaved = false;
+  }
+  drawSave();
+}
+
+// saveNow writes pending changes (manual), or only asks whether they have
+// been written.
+function saveNow(manual) {
+  const req = api(manual ? 'POST' : 'GET', '/api/save');
+  showWrite(req.catch(() => {}));
+  return req;
+}
+
+// showWrite shows the button as saving until p settles, and at least
+// SAVE_SHOWN ms.
+function showWrite(p) {
+  saving.busy++;
+  drawSave();
+  Promise.all([p, new Promise((ok) => setTimeout(ok, SAVE_SHOWN))]).then(() => { saving.busy--; drawSave(); });
+}
+
+function saveButton() {
+  if (!saveButton.el) saveButton.el = h('button.save', { type: 'button', onclick: () => saveNow(true) });
+  drawSave();
+  return saveButton.el;
+}
+
+function drawSave() {
+  const b = saveButton.el;
+  if (!b) return;
+  if (saving.busy) {
+    b.className = 'save busy';
+    b.title = 'Writing to disk…';
+    b.replaceChildren(h('span.spin'), 'Saving…');
+  } else if (saving.unsaved) {
+    b.className = 'save unsaved';
+    b.title = `Changes are in memory, to be written to disk at ${saving.due.toLocaleTimeString()}. Click to write them now.`;
+    b.replaceChildren(h('span.dot'), 'Save');
+  } else {
+    b.className = 'save saved';
+    b.title = 'Everything is written to disk';
+    b.replaceChildren('✓ Saved');
+  }
+}
 
 function select(options, value, onchange, attrs) {
   return h('select', Object.assign({ onchange: (e) => onchange(e.target.value) }, attrs || {}),
@@ -514,6 +584,7 @@ function topNav(projects) {
   $nav.replaceChildren(
     ...(projects || []).map((p) => h('a', { href: `#/p/${p.key}/backlog` }, p.key)),
     h('span.spacer'),
+    saveButton(),
     searchBox(),
     h('a', { href: '#/import' }, 'Import from Jira'),
     h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('POST', '/api/logout'); showLogin(); } }, 'Sign out'));

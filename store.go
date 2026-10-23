@@ -163,6 +163,7 @@ type Store struct {
 	delay time.Duration // 0: write on every change
 	dirty bool          // changes not written yet
 	timer *time.Timer   // pending delayed write
+	due   time.Time     // when the pending delayed write runs
 }
 
 func OpenStore(path string) (*Store, error) {
@@ -237,7 +238,7 @@ func (s *Store) save() error {
 	if s.delay > 0 {
 		s.dirty = true
 		if s.timer == nil {
-			s.timer = time.AfterFunc(s.delay, s.delayedWrite)
+			s.schedule()
 		}
 		return nil
 	}
@@ -262,8 +263,25 @@ func (s *Store) delayedWrite() {
 		// The changes are still in memory (and were already confirmed to
 		// the client), so keep them and try again later.
 		log.Printf("save: %v; retrying in %s", err, s.delay)
-		s.timer = time.AfterFunc(s.delay, s.delayedWrite)
+		s.schedule()
 	}
+}
+
+// schedule starts the delayed write; s.mu must be held for writing.
+func (s *Store) schedule() {
+	s.due = time.Now().Add(s.delay)
+	s.timer = time.AfterFunc(s.delay, s.delayedWrite)
+}
+
+// Unsaved reports whether there are changes not written to disk yet and,
+// if so, how long until the delayed write is due (0 when it is overdue).
+func (s *Store) Unsaved() (bool, time.Duration) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.dirty {
+		return false, 0
+	}
+	return true, max(time.Until(s.due), 0)
 }
 
 // writePending writes the state if it has unwritten changes; s.mu must be
@@ -283,7 +301,8 @@ func (s *Store) writePending() error {
 	return nil
 }
 
-// Flush writes pending changes now and cancels the delayed write.
+// Flush writes pending changes now and cancels the delayed write; if the
+// write fails, the delayed write is scheduled again.
 func (s *Store) Flush() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -292,6 +311,10 @@ func (s *Store) Flush() error {
 		s.timer = nil
 	}
 	if err := s.writePending(); err != nil {
+		// The save button flushes too: keep the delayed write as a retry.
+		if s.delay > 0 {
+			s.schedule()
+		}
 		return fmt.Errorf("save: %w", err)
 	}
 	return nil

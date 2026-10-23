@@ -79,8 +79,14 @@ func TestSaveDelay(t *testing.T) {
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("written before the delay: %v", err)
 	}
+	if unsaved, in := s.Unsaved(); !unsaved || in <= 0 || in > time.Hour {
+		t.Fatalf("pending change: unsaved %v, due in %s", unsaved, in)
+	}
 	if err := s.Flush(); err != nil {
 		t.Fatal(err)
+	}
+	if unsaved, _ := s.Unsaved(); unsaved {
+		t.Fatal("unsaved after flush")
 	}
 	s2, _ := OpenStore(path)
 	if got, err := s2.Issue("APP-1"); err != nil || got.Summary != "first" {

@@ -72,6 +72,11 @@ container (`docker stop`, idlegate) writes pending changes first. A crash
 or power cut loses at most the last `SAVE_DELAY` of changes; set
 `SAVE_DELAY=0` to write every change immediately, as before.
 
+The button next to the search shows where things stand: *Saved* when
+everything is on disk, *Save* while changes are waiting for the timer
+(hover it to see when they will be written; click it to write them now),
+and a spinning *Saving…* for a moment whenever a write happens.
+
 | Variable   | Default | |
 |------------|---------|-|
 | `API_KEY`  | –       | required |
