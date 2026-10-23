@@ -540,19 +540,42 @@ function createIssueDialog(ctx, preset) {
     release: preset.release || 0, epic: preset.epic || '', board: !!preset.board,
   };
   const relOpts = [[0, '— none —'], ...ctx.releases.filter((r) => !r.released).map((r) => [r.id, r.name])];
-  const epicOpts = [['', '— none —'], ...ctx.epics.map((e) => [e.key, `${e.key} ${e.summary}`])];
   const sum = h('input', { type: 'text', style: 'width:100%', oninput: (e) => { f.summary = e.target.value; } });
+  const desc = h('textarea', { oninput: (e) => { f.description = e.target.value; } });
+  // The choices are pickers with icons, as in the issue's side panel; a
+  // choice redraws the fields (the summary and description keep their text).
+  const fields = h('div.fields');
+  const set = (patch) => { Object.assign(f, patch); draw(); };
+  function draw() {
+    const release = ctx.releases.find((r) => r.id === f.release);
+    const epic = ctx.epics.find((e) => e.key === f.epic);
+    fields.replaceChildren(
+      h('label', 'Type'), fieldPicker('Choose the type', () => META.types.map((t) => ({
+        icon: typeIcon(t), label: t, on: t === f.type, onclick: () => set({ type: t }),
+      })), typeIcon(f.type), f.type),
+      h('label', 'Summary'), sum,
+      h('label', 'Priority'), fieldPicker('Choose the priority', () => META.priorities.map((x) => ({
+        icon: prioIcon(x), label: x, on: x === f.priority, onclick: () => set({ priority: x }),
+      })), prioIcon(f.priority), f.priority),
+      h('label', 'Release'), fieldPicker('Choose the release', () => relOpts.map(([id, name]) => ({
+        icon: icon('release'), label: name, on: id === f.release, onclick: () => set({ release: id }),
+      })), icon('release'), release ? h('span.ell', release.name) : h('span.muted', 'None')),
+      h('label', 'Epic'), fieldPicker('Choose the epic', () => [
+        { icon: icon('epic'), label: '— none —', on: !epic, onclick: () => set({ epic: '' }) },
+        ...ctx.epics.map((e) => ({
+          icon: typeIcon('Epic'), label: `${e.key} ${e.summary}`, on: epic === e, onclick: () => set({ epic: e.key }),
+        }))], epic ? [typeIcon('Epic'), h('span.ell', epic.summary)] : [icon('epic'), h('span.muted', 'None')]),
+      h('label', 'Board'), fieldPicker('Put it on the board or in the backlog', () => [
+        { icon: icon('board'), label: 'On the board', on: f.board, onclick: () => set({ board: true }) },
+        { icon: icon('backlog'), label: 'In the backlog', on: !f.board, onclick: () => set({ board: false }) },
+      ], icon(f.board ? 'board' : 'backlog'), f.board ? 'On the board' : 'In the backlog'),
+      h('label', 'Description'), desc);
+  }
+  draw();
   const dlg = h('dialog',
     h('h2', { style: 'margin-top:0' }, `Create issue in ${ctx.project.key}`),
     h('form', { method: 'dialog', onsubmit: submit },
-      h('div.fields',
-        h('label', 'Type'), select(META.types.map((t) => [t, t]), f.type, (v) => { f.type = v; }),
-        h('label', 'Summary'), sum,
-        h('label', 'Priority'), select(META.priorities.map((p) => [p, p]), f.priority, (v) => { f.priority = v; }),
-        h('label', 'Release'), select(relOpts, f.release, (v) => { f.release = +v; }),
-        h('label', 'Epic'), select(epicOpts, f.epic, (v) => { f.epic = v; }),
-        h('label', 'Board'), h('label', h('input', { type: 'checkbox', checked: f.board, onchange: (e) => { f.board = e.target.checked; } }), ' Put it on the board'),
-        h('label', 'Description'), h('textarea', { oninput: (e) => { f.description = e.target.value; } })),
+      fields,
       h('div.actions',
         h('button', { type: 'button', onclick: () => dlg.close() }, 'Cancel'),
         h('button.primary', { type: 'submit' }, 'Create'))));
