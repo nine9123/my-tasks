@@ -123,7 +123,8 @@ input.inline { flex: 1; min-width: 0; width: 100%; padding: 1px 6px; }
 .board-nav.dragging, .board-nav.dragging .nav-frame { cursor: grabbing; }
 .col { background: var(--hover); border-radius: 6px; padding: 8px; min-height: 200px; }
 .col.drop { outline: 2px solid var(--accent); }
-.col > .head { font-size: 12px; font-weight: 600; text-transform: uppercase; color: var(--muted); margin: 2px 4px 8px; }
+.col > .head { font-size: 12px; font-weight: 600; text-transform: uppercase; color: var(--muted); margin: 2px 4px 8px; display: flex; align-items: center; gap: 4px; min-height: 20px; }
+.col > .head .name { flex: 1; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 8px; margin-bottom: 6px; cursor: grab; }
 .card:hover { border-color: var(--muted); }
 .card .meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; font-size: 12px; color: var(--muted); }
