@@ -46,6 +46,9 @@ type Project struct {
 	NextNumber   int       `json:"nextNumber"`
 	NextStatusID int       `json:"nextStatusId"`
 	Created      time.Time `json:"created"`
+	// The board's unreleased work leaves out done issues resolved before
+	// this, as it does those resolved more than two weeks ago.
+	DoneHiddenBefore *time.Time `json:"doneHiddenBefore"`
 }
 
 type Release struct {
@@ -421,6 +424,23 @@ func (s *Store) UpdateProject(key string, name, desc *string) (Project, error) {
 	return *p, s.save()
 }
 
+// HideDone hides the done issues on the project's board, the ones resolved
+// until now; hide false shows them again.
+func (s *Store) HideDone(key string, hide bool) (Project, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.projectByKey(key)
+	if p == nil {
+		return Project{}, notFound("project %s not found", key)
+	}
+	p.DoneHiddenBefore = nil
+	if hide {
+		now := s.now()
+		p.DoneHiddenBefore = &now
+	}
+	return *p, s.save()
+}
+
 func (s *Store) DeleteProject(key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -754,9 +774,10 @@ type SearchHit struct {
 }
 
 // Search finds issues in all projects by key, summary or description, best
-// matches first: the issue with that exact key, then keys starting with the
-// text, then matches in the summary, then in the description. Within each,
-// the most recently updated come first.
+// matches first: the issue with that exact key (or, for a bare number like
+// "12", every issue with that number, whatever its project), then keys
+// starting with the text, then matches in the summary, then in the
+// description. Within each, the most recently updated come first.
 func (s *Store) Search(text string, limit int) []SearchHit {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -773,7 +794,7 @@ func (s *Store) Search(text string, limit int) []SearchHit {
 		key := strings.ToLower(i.Key)
 		score := 0
 		switch {
-		case key == q:
+		case key == q, q == strconv.Itoa(i.Number):
 			score = 4
 		case strings.HasPrefix(key, q):
 			score = 3
