@@ -540,48 +540,57 @@ function createIssueDialog(ctx, preset) {
     release: preset.release || 0, epic: preset.epic || '', board: !!preset.board,
   };
   const relOpts = [[0, '— none —'], ...ctx.releases.filter((r) => !r.released).map((r) => [r.id, r.name])];
-  const sum = h('input', { type: 'text', style: 'width:100%', oninput: (e) => { f.summary = e.target.value; } });
-  const desc = h('textarea', { oninput: (e) => { f.description = e.target.value; } });
-  // The choices are pickers with icons, as in the issue's side panel; a
-  // choice redraws the fields (the summary and description keep their text).
-  const fields = h('div.fields');
+  const p = ctx.project;
+  const sum = h('input.summary', { type: 'text', placeholder: 'Summary', 'aria-label': 'Summary', oninput: (e) => { f.summary = e.target.value; } });
+  const desc = h('textarea', { 'aria-label': 'Description', oninput: (e) => { f.description = e.target.value; } });
+  // The key the issue will get: the project's next number, or past the
+  // issues created since the project was loaded.
+  const next = Math.max(p.nextNumber || 1, ...ctx.issues.map((i) => i.number + 1));
+  // The details are laid out as in the issue's side panel, with the same
+  // pickers; a choice redraws them (the summary and description keep their
+  // text).
+  const panel = h('div.panel');
   const set = (patch) => { Object.assign(f, patch); draw(); };
   function draw() {
     const release = ctx.releases.find((r) => r.id === f.release);
     const epic = ctx.epics.find((e) => e.key === f.epic);
-    fields.replaceChildren(
+    panel.replaceChildren(h('div.fields',
+      h('label', 'Key'), h('b.fval.muted', { title: 'Given when the issue is created' }, icon('key'), `${p.key}-${next}`),
+      h('label', 'Status'), h('span.fval', { title: 'New issues start here' }, statusPill(p, p.statuses[0].id)),
       h('label', 'Type'), fieldPicker('Choose the type', () => META.types.map((t) => ({
         icon: typeIcon(t), label: t, on: t === f.type, onclick: () => set({ type: t }),
       })), typeIcon(f.type), f.type),
-      h('label', 'Summary'), sum,
       h('label', 'Priority'), fieldPicker('Choose the priority', () => META.priorities.map((x) => ({
         icon: prioIcon(x), label: x, on: x === f.priority, onclick: () => set({ priority: x }),
       })), prioIcon(f.priority), f.priority),
       h('label', 'Release'), fieldPicker('Choose the release', () => relOpts.map(([id, name]) => ({
         icon: icon('release'), label: name, on: id === f.release, onclick: () => set({ release: id }),
       })), icon('release'), release ? h('span.ell', release.name) : h('span.muted', 'None')),
-      h('label', 'Epic'), fieldPicker('Choose the epic', () => [
+      // Epics are not on the board nor in an epic: the issue panel leaves
+      // these out for them too.
+      f.type !== 'Epic' ? [h('label', 'Board'), fieldPicker('Put it on the board or in the backlog', () => [
+        { icon: icon('board'), label: 'On the board', on: f.board, onclick: () => set({ board: true }) },
+        { icon: icon('backlog'), label: 'In the backlog', on: !f.board, onclick: () => set({ board: false }) },
+      ], icon(f.board ? 'board' : 'backlog'), f.board ? 'On the board' : 'In the backlog')] : null,
+      f.type !== 'Epic' ? [h('label', 'Epic'), fieldPicker('Choose the epic', () => [
         { icon: icon('epic'), label: '— none —', on: !epic, onclick: () => set({ epic: '' }) },
         ...ctx.epics.map((e) => ({
           icon: typeIcon('Epic'), label: `${e.key} ${e.summary}`, on: epic === e, onclick: () => set({ epic: e.key }),
-        }))], epic ? [typeIcon('Epic'), h('span.ell', epic.summary)] : [icon('epic'), h('span.muted', 'None')]),
-      h('label', 'Board'), fieldPicker('Put it on the board or in the backlog', () => [
-        { icon: icon('board'), label: 'On the board', on: f.board, onclick: () => set({ board: true }) },
-        { icon: icon('backlog'), label: 'In the backlog', on: !f.board, onclick: () => set({ board: false }) },
-      ], icon(f.board ? 'board' : 'backlog'), f.board ? 'On the board' : 'In the backlog'),
-      h('label', 'Description'), desc);
+        }))], epic ? [typeIcon('Epic'), h('span.ell', epic.summary)] : [icon('epic'), h('span.muted', 'None')])] : null));
   }
   draw();
-  const dlg = h('dialog',
-    h('h2', { style: 'margin-top:0' }, `Create issue in ${ctx.project.key}`),
+  const dlg = h('dialog.create-issue',
+    h('h2', { style: 'margin-top:0' }, `Create issue in ${p.key}`),
     h('form', { method: 'dialog', onsubmit: submit },
-      fields,
+      h('div.issue',
+        h('div', sum, h('h2', 'Description'), desc),
+        panel),
       h('div.actions',
         h('button', { type: 'button', onclick: () => dlg.close() }, 'Cancel'),
         h('button.primary', { type: 'submit' }, 'Create'))));
   async function submit(e) {
     e.preventDefault();
-    const body = { type: f.type, summary: f.summary, description: f.description, priority: f.priority, release: f.release, board: f.board };
+    const body = { type: f.type, summary: f.summary, description: f.description, priority: f.priority, release: f.release, board: f.type !== 'Epic' && f.board };
     if (f.epic && f.type !== 'Epic') body.epic = f.epic;
     const issue = await api('POST', `/api/projects/${ctx.project.key}/issues`, body);
     dlg.close();
