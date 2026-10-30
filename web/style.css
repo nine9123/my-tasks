@@ -52,6 +52,7 @@ input.inline { flex: 1; min-width: 0; width: 100%; padding: 1px 6px; }
 #topnav { display: flex; flex-wrap: wrap; gap: 6px 16px; flex: 1; min-width: 0; align-items: center; }
 #topnav > a { white-space: nowrap; }
 #topnav .spacer { flex: 1; }
+#topnav .create { white-space: nowrap; }
 .searchbox { position: relative; }
 .searchbox input.search { width: 260px; max-width: 100%; }
 .search-results { position: absolute; top: calc(100% + 4px); right: 0; width: min(520px, 90vw); max-height: 70vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 20px rgba(9, 30, 66, .2); z-index: 10; }
@@ -76,8 +77,6 @@ button.save .spin { width: 12px; height: 12px; border: 2px solid currentColor; b
 .tabs a.on { color: var(--accent); border-color: var(--accent); }
 .tabs a { display: inline-flex; align-items: center; gap: 6px; }
 .tabs a .ico { color: inherit; }
-.tabs .spacer { flex: 1; }
-.tabs button { margin-bottom: 6px; white-space: nowrap; }
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
 .toolbar label { display: flex; gap: 4px; align-items: center; }
 
@@ -254,7 +253,7 @@ textarea.inline { flex: 1; min-width: 0; width: 100%; min-height: 0; padding: 1p
   #app { padding: 12px; }
   .tabs { gap: 0; }
   .tabs a { padding: 6px 7px; gap: 4px; }
-  .tabs .wide { display: none; }
+  #topnav .wide { display: none; }
   /* Rows put the summary on a line of its own, under the icons. */
   .row { flex-wrap: wrap; gap: 2px 6px; }
   .row .chip, .row .rel { max-width: 25%; }

@@ -307,11 +307,16 @@ function epicChip(ctx, issue) {
 function projectHeader(ctx, tab) {
   const k = ctx.project.key;
   const t = (name, ico, label) => h('a', { href: `#/p/${k}/${name}`, class: tab === name ? 'on' : '' }, icon(ico), label);
+  // Create goes in the sticky header, so it is at hand however far the page
+  // is scrolled. topNav has rebuilt the header by now: it is put after the
+  // spacer, before the save button.
+  const create = h('button.primary.create', { type: 'button', onclick: () => createIssueDialog(ctx, { board: tab === 'board' }) }, 'Create', h('span.wide', ' issue'));
+  $nav.querySelector('.create')?.remove(); // one left by a page drawn over this one
+  $nav.insertBefore(create, $nav.querySelector('.spacer').nextSibling);
   return [
     h('h1', ctx.project.name, ' ', h('span.muted.small', k)),
     h('div.tabs', t('backlog', 'backlog', 'Backlog'), t('board', 'board', 'Board'), t('epics', 'epic', 'Epics'),
-      t('releases', 'release', 'Releases'), t('settings', 'settings', 'Settings'),
-      h('span.spacer'), h('button.primary', { onclick: () => createIssueDialog(ctx, { board: tab === 'board' }) }, 'Create', h('span.wide', ' issue'))),
+      t('releases', 'release', 'Releases'), t('settings', 'settings', 'Settings')),
   ];
 }
 
