@@ -1303,3 +1303,74 @@ func (s *Store) DeleteLink(id int) error {
 	delete(s.d.Links, id)
 	return s.save()
 }
+
+// ---- export ----
+
+// ProjectExport is everything a project holds, for a download from its
+// settings: the project with its workflow and board settings, its releases,
+// its issues (descriptions, board flag and rank included), their comments,
+// and every link that touches one of its issues. The ids are those of the
+// data file, so issues, releases, epics, comments and links refer to each
+// other as they do there; links carry both keys too, since the other end
+// may be in another project.
+type ProjectExport struct {
+	Schema   int          `json:"schema"`
+	Exported time.Time    `json:"exported"`
+	Project  Project      `json:"project"`
+	Releases []Release    `json:"releases"`
+	Issues   []Issue      `json:"issues"`
+	Comments []Comment    `json:"comments"`
+	Links    []ExportLink `json:"links"`
+}
+
+type ExportLink struct {
+	Link
+	FromKey string `json:"fromKey"`
+	ToKey   string `json:"toKey"`
+}
+
+func (s *Store) ExportProject(key string) (ProjectExport, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p := s.projectByKey(key)
+	if p == nil {
+		return ProjectExport{}, notFound("project %s not found", key)
+	}
+	out := ProjectExport{Schema: dataSchema, Exported: s.now(), Project: *p,
+		Releases: []Release{}, Issues: []Issue{}, Comments: []Comment{}, Links: []ExportLink{}}
+	out.Project.Statuses = append([]Status{}, p.Statuses...)
+	for _, r := range s.d.Releases {
+		if r.ProjectID == p.ID {
+			out.Releases = append(out.Releases, *r)
+		}
+	}
+	sortReleases(out.Releases)
+	mine := map[int]bool{}
+	for _, i := range s.d.Issues {
+		if i.ProjectID == p.ID {
+			out.Issues = append(out.Issues, *i)
+			mine[i.ID] = true
+		}
+	}
+	sortByRank(out.Issues)
+	for _, c := range s.d.Comments {
+		if mine[c.IssueID] {
+			out.Comments = append(out.Comments, *c)
+		}
+	}
+	sort.Slice(out.Comments, func(a, b int) bool {
+		if !out.Comments[a].Created.Equal(out.Comments[b].Created) {
+			return out.Comments[a].Created.Before(out.Comments[b].Created)
+		}
+		return out.Comments[a].ID < out.Comments[b].ID
+	})
+	for _, l := range s.d.Links {
+		from, to := s.d.Issues[l.From], s.d.Issues[l.To]
+		if from == nil || to == nil || !(mine[l.From] || mine[l.To]) {
+			continue
+		}
+		out.Links = append(out.Links, ExportLink{Link: *l, FromKey: from.Key, ToKey: to.Key})
+	}
+	sort.Slice(out.Links, func(a, b int) bool { return out.Links[a].ID < out.Links[b].ID })
+	return out, nil
+}
