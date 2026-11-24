@@ -1317,7 +1317,12 @@ async function pageSettings(key) {
 // server gives it (KEY-YYYY-MM-DD.json). Fetched rather than linked so that
 // an error shows as a toast instead of being saved as the file.
 async function exportProject(key) {
-  const r = await fetch(`/api/projects/${encodeURIComponent(key)}/export`, { credentials: 'same-origin' });
+  const path = `/api/projects/${encodeURIComponent(key)}/export`;
+  let r = await fetch(path, { credentials: 'same-origin' });
+  // As in api(): behind idlegate the first request may find the server
+  // stopped and get a 502; a read is safe to repeat.
+  if (r.status === 502) r = await fetch(path, { credentials: 'same-origin' });
+  noteSave(r, 'GET');
   if (r.status === 401) { showLogin(); return; }
   if (!r.ok) {
     toast((await r.json().catch(() => ({}))).error || r.statusText);
