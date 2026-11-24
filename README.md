@@ -50,6 +50,10 @@ auth. No users, no permissions, no automations.
 - **Releases**: name, start and release date, description, released or not,
   with progress per release. Ordered by release date, then by version number.
 - **Import from Jira**: see [below](#migrating-from-jira).
+- **Export**: *Export project* under *Settings* downloads the project as one
+  JSON file (`APP-2026-11-24.json`): workflow, releases, every issue with
+  its description, rank and board/backlog place, comments and links. Also
+  `GET /api/projects/<key>/export` with the API key.
 
 Deliberately left out: sprints, summary, timeline, archive, subtasks,
 assignees, labels, components, attachments, time tracking, automations.

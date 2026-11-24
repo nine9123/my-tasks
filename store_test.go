@@ -427,3 +427,51 @@ func TestHideDone(t *testing.T) {
 		t.Fatalf("unknown project: %v", err)
 	}
 }
+
+func TestExportProject(t *testing.T) {
+	s := newTestStore(t)
+	s.CreateProject("APP", "App", "")
+	s.CreateProject("OPS", "Ops", "")
+	rel, err := s.CreateRelease("APP", ReleaseInput{Name: ptr("1.0")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := mustIssue(t, s, "APP", "first")
+	s.UpdateIssue(a.Key, IssueInput{Description: ptr("long text"), Release: ptr(rel.ID)})
+	b := mustIssue(t, s, "APP", "second")
+	o := mustIssue(t, s, "OPS", "elsewhere")
+	mustIssue(t, s, "OPS", "unrelated")
+	s.AddComment(a.Key, "on first")
+	s.AddComment(o.Key, "on ops")
+	s.AddLink(a.Key, "Blocks", b.Key, false)
+	s.AddLink(o.Key, "Relates", b.Key, false)
+	s.AddLink(o.Key, "Relates", "OPS-2", false)
+
+	ex, err := s.ExportProject("APP")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ex.Project.Key != "APP" || len(ex.Project.Statuses) != 4 || ex.Schema != dataSchema {
+		t.Fatalf("project: %+v", ex.Project)
+	}
+	if len(ex.Releases) != 1 || ex.Releases[0].Name != "1.0" {
+		t.Fatalf("releases: %+v", ex.Releases)
+	}
+	if len(ex.Issues) != 2 || ex.Issues[0].Key != "APP-1" || ex.Issues[1].Key != "APP-2" ||
+		ex.Issues[0].Description != "long text" || ex.Issues[0].ReleaseID != rel.ID {
+		t.Fatalf("issues: %+v", ex.Issues)
+	}
+	if len(ex.Comments) != 1 || ex.Comments[0].Body != "on first" {
+		t.Fatalf("comments: %+v", ex.Comments)
+	}
+	// Links within the project and to other projects, not those between
+	// two other issues.
+	if len(ex.Links) != 2 || ex.Links[0].FromKey != "APP-1" || ex.Links[0].ToKey != "APP-2" ||
+		ex.Links[1].FromKey != "OPS-1" || ex.Links[1].ToKey != "APP-2" {
+		t.Fatalf("links: %+v", ex.Links)
+	}
+
+	if _, err := s.ExportProject("NOPE"); errStatus(err) != 404 {
+		t.Fatalf("missing project: %v", err)
+	}
+}

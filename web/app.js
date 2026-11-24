@@ -1300,6 +1300,9 @@ async function pageSettings(key) {
       h('h2', 'Workflow'),
       h('p.muted.small', 'Statuses are the board columns, left to right. The category decides what counts as done. The first status is where new issues start.'),
       box,
+      h('h2', 'Export'),
+      h('p.muted.small', 'Downloads the whole project as one JSON file: the project and its workflow, releases, every issue with its description, status, release, epic, rank and whether it is on the board, the comments, and the links.'),
+      h('button', { onclick: () => exportProject(p.key) }, 'Export project'),
       h('h2', 'Danger zone'),
       h('button.danger', {
         onclick: async () => {
@@ -1308,6 +1311,25 @@ async function pageSettings(key) {
           location.hash = '#/';
         },
       }, 'Delete project')));
+}
+
+// exportProject downloads the project as JSON, under the file name the
+// server gives it (KEY-YYYY-MM-DD.json). Fetched rather than linked so that
+// an error shows as a toast instead of being saved as the file.
+async function exportProject(key) {
+  const r = await fetch(`/api/projects/${encodeURIComponent(key)}/export`, { credentials: 'same-origin' });
+  if (r.status === 401) { showLogin(); return; }
+  if (!r.ok) {
+    toast((await r.json().catch(() => ({}))).error || r.statusText);
+    return;
+  }
+  const name = (/filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '') || [])[1] || `${key}.json`;
+  const url = URL.createObjectURL(await r.blob());
+  const a = h('a', { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
 // issueView builds the issue, for its own page or the issue modal. host

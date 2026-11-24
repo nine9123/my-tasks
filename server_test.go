@@ -322,3 +322,30 @@ func TestImportOverHTTP(t *testing.T) {
 		}
 	}
 }
+
+func TestExportOverHTTP(t *testing.T) {
+	ts := newTestServer(t)
+	call(t, ts, "POST", "/api/projects", `{"key":"APP","name":"App"}`, key)
+	call(t, ts, "POST", "/api/projects/APP/issues", `{"summary":"Do it","description":"long text"}`, key)
+	if r, _ := call(t, ts, "GET", "/api/projects/APP/export", "", nil); r.StatusCode != 401 {
+		t.Fatalf("no key: %d", r.StatusCode)
+	}
+	r, b := call(t, ts, "GET", "/api/projects/APP/export", "", key)
+	if r.StatusCode != 200 {
+		t.Fatalf("export: %d %s", r.StatusCode, b)
+	}
+	cd := r.Header.Get("Content-Disposition")
+	if !strings.HasPrefix(cd, `attachment; filename="APP-`) || !strings.HasSuffix(cd, `.json"`) {
+		t.Fatalf("Content-Disposition: %q", cd)
+	}
+	var ex ProjectExport
+	if err := json.Unmarshal([]byte(b), &ex); err != nil {
+		t.Fatal(err)
+	}
+	if ex.Project.Key != "APP" || len(ex.Issues) != 1 || ex.Issues[0].Description != "long text" {
+		t.Fatalf("export: %s", b)
+	}
+	if r, _ := call(t, ts, "GET", "/api/projects/NOPE/export", "", key); r.StatusCode != 404 {
+		t.Fatalf("missing: %d", r.StatusCode)
+	}
+}

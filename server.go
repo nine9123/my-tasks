@@ -111,6 +111,23 @@ func (s *Server) routes() {
 	api("DELETE /api/projects/{key}", func(r *http.Request) (any, error) {
 		return nil, s.store.DeleteProject(r.PathValue("key"))
 	})
+	// The settings page's Export button: the whole project as a JSON file
+	// download (see ProjectExport). Not through api(): it needs its own
+	// Content-Disposition.
+	m.HandleFunc("GET /api/projects/{key}/export", s.auth(func(w http.ResponseWriter, r *http.Request) {
+		ex, err := s.store.ExportProject(r.PathValue("key"))
+		s.saveHeaders(w)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		name := ex.Project.Key + "-" + ex.Exported.Format("2006-01-02") + ".json"
+		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+		w.Header().Set("Content-Type", "application/json")
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		enc.Encode(ex)
+	}))
 	api("PUT /api/projects/{key}/statuses", func(r *http.Request) (any, error) {
 		var in []Status
 		if err := decode(r, &in); err != nil {
